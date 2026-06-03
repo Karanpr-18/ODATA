@@ -191,75 +191,6 @@ export function Sidebar({
         </button>
       </div>
 
-      {/* View Segmented Toggle (Chat vs Graph) */}
-      <div
-        style={{
-          margin: "0 14px 12px",
-          display: "flex",
-          background: "var(--bg-tertiary, rgba(255,255,255,0.02))",
-          padding: 3,
-          borderRadius: "var(--radius-md)",
-          border: "1px solid var(--border-secondary)",
-        }}
-      >
-        <button
-          onClick={() => onViewChange("chat")}
-          style={{
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 6,
-            padding: "8px 0",
-            fontSize: "12px",
-            fontWeight: 600,
-            borderRadius: "var(--radius-sm)",
-            border: "none",
-            cursor: "pointer",
-            background:
-              currentView === "chat"
-                ? "var(--bg-active, rgba(255,255,255,0.06))"
-                : "transparent",
-            color:
-              currentView === "chat"
-                ? "var(--text-accent)"
-                : "var(--text-secondary)",
-            transition: "all var(--transition-fast)",
-          }}
-        >
-          <MessageSquare size={13} />
-          <span>OData Chat</span>
-        </button>
-        <button
-          onClick={() => onViewChange("graph")}
-          style={{
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 6,
-            padding: "8px 0",
-            fontSize: "12px",
-            fontWeight: 600,
-            borderRadius: "var(--radius-sm)",
-            border: "none",
-            cursor: "pointer",
-            background:
-              currentView === "graph"
-                ? "var(--bg-active, rgba(255,255,255,0.06))"
-                : "transparent",
-            color:
-              currentView === "graph"
-                ? "var(--text-accent)"
-                : "var(--text-secondary)",
-            transition: "all var(--transition-fast)",
-          }}
-        >
-          <Network size={13} />
-          <span>Entity Graph</span>
-        </button>
-      </div>
-
       {/* Thread List */}
       <div
         style={{
@@ -450,7 +381,7 @@ export function Sidebar({
         )}
       </div>
 
-      {/* Bottom section: Model Selector + Theme Toggle */}
+      {/* Bottom section: Settings + Theme Toggle */}
       <div
         style={{
           padding: "12px 14px",
@@ -460,83 +391,14 @@ export function Sidebar({
           gap: "10px",
         }}
       >
-        {/* Model Selector */}
-        <div className="model-selector" ref={modelRef}>
-          <button
-            className="model-selector-btn"
-            onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
-          >
-            <Cpu size={14} style={{ opacity: 0.7 }} />
-            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {selectedModelInfo.icon} {selectedModelInfo.name}
-            </span>
-            <ChevronDown
-              size={14}
-              style={{
-                transition: "transform var(--transition-fast)",
-                transform: modelDropdownOpen ? "rotate(180deg)" : "rotate(0)",
-              }}
-            />
-          </button>
-          {modelDropdownOpen && (
-            <div
-              className="dropdown-menu"
-              style={{
-                position: "absolute",
-                bottom: "100%",
-                left: 0,
-                right: 0,
-                marginBottom: 4,
-                zIndex: 50,
-              }}
-            >
-              {MODELS.map((model) => (
-                <button
-                  key={model.id}
-                  className="dropdown-item"
-                  onClick={() => {
-                    onModelChange(model.id);
-                    setModelDropdownOpen(false);
-                  }}
-                  style={{
-                    background:
-                      selectedModel === model.id
-                        ? "var(--bg-active)"
-                        : undefined,
-                  }}
-                >
-                  <span style={{ fontSize: "16px" }}>{model.icon}</span>
-                  <div style={{ flex: 1 }}>
-                    <div
-                      style={{
-                        fontSize: "13px",
-                        fontWeight: selectedModel === model.id ? 600 : 450,
-                        color:
-                          selectedModel === model.id
-                            ? "var(--text-accent)"
-                            : "var(--text-primary)",
-                      }}
-                    >
-                      {model.name}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: "11px",
-                        color: "var(--text-tertiary)",
-                        marginTop: 1,
-                      }}
-                    >
-                      {model.description}
-                    </div>
-                  </div>
-                  {selectedModel === model.id && (
-                    <Check size={14} style={{ color: "var(--text-accent)" }} />
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        {/* Settings Button */}
+        <button
+          className="model-selector-btn"
+          onClick={onOpenSettings}
+        >
+          <Settings size={15} style={{ opacity: 0.7 }} />
+          <span style={{ flex: 1, textAlign: "left" }}>Settings</span>
+        </button>
 
         {/* Theme Toggle */}
         <div

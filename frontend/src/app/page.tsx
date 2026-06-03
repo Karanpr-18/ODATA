@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Sidebar } from "@/components/sidebar";
 import { ChatArea } from "@/components/chat-area";
-import { GraphExplorer } from "@/components/graph-explorer";
+import { SettingsView } from "@/components/settings-view";
 import { fetchThreads, createThread, deleteThread, renameThread, fetchThreadMessages } from "@/lib/api";
 import { Thread, Message, MODELS } from "@/lib/types";
 
@@ -14,7 +14,7 @@ export default function Home() {
   const [selectedModel, setSelectedModel] = useState(MODELS[0].id);
   const [isLoadingThreads, setIsLoadingThreads] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [currentView, setCurrentView] = useState<"chat" | "graph">("chat");
+  const [currentView, setCurrentView] = useState<"chat" | "settings">("chat");
 
   // Skip loading messages from DB for newly created threads to prevent wiping state
   const shouldSkipLoadRef = useRef(false);
@@ -56,6 +56,8 @@ export default function Home() {
       setThreads((prev) => [thread, ...prev]);
       setActiveThreadId(thread.id);
       setMessages([]);
+      // Switch to chat view if in settings
+      setCurrentView("chat");
     }
   }, []);
 
@@ -81,6 +83,8 @@ export default function Home() {
 
   const handleSelectThread = useCallback((threadId: string) => {
     setActiveThreadId(threadId);
+    // Switch to chat view when selecting a thread
+    setCurrentView("chat");
   }, []);
 
   const handleThreadCreated = useCallback((thread: Thread) => {
@@ -104,20 +108,14 @@ export default function Home() {
       <Sidebar
         threads={threads}
         activeThreadId={activeThreadId}
-        selectedModel={selectedModel}
         isLoading={isLoadingThreads}
         isOpen={sidebarOpen}
-        currentView={currentView}
-        onViewChange={(view) => {
-          setCurrentView(view);
-          // If switching to graph view, we can keep the sidebar intact but change right-side rendering
-        }}
         onNewChat={handleNewChat}
         onSelectThread={handleSelectThread}
         onDeleteThread={handleDeleteThread}
         onRenameThread={handleRenameThread}
-        onModelChange={setSelectedModel}
         onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+        onOpenSettings={() => setCurrentView("settings")}
       />
       {currentView === "chat" ? (
         <ChatArea
@@ -131,7 +129,7 @@ export default function Home() {
           onUpdateThreadTitle={handleUpdateThreadTitle}
         />
       ) : (
-        <GraphExplorer />
+        <SettingsView onBack={() => setCurrentView("chat")} />
       )}
     </div>
   );
