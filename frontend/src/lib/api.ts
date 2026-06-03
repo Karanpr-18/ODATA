@@ -189,3 +189,65 @@ export async function fetchSchemaGraph(): Promise<{ nodes: any[]; edges: any[] }
   }
 }
 
+/* ============================================
+   SETTINGS
+   ============================================ */
+
+export interface LLMConfig {
+  provider: string;
+  api_key: string;
+  base_url: string;
+  active_model: string;
+  fallback_model: string;
+}
+
+export interface ServiceConfig {
+  name: string;
+  url: string;
+  description: string;
+}
+
+export interface JoinConfig {
+  source_service: string;
+  target_service: string;
+  source_table: string;
+  target_table: string;
+  join_key: string;
+}
+
+export interface AppSettings {
+  llm: LLMConfig;
+  services: ServiceConfig[];
+  joins: JoinConfig[];
+}
+
+export async function fetchSettings(): Promise<AppSettings> {
+  try {
+    const res = await fetch(`${API_BASE}/api/settings`, {
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error("Failed to fetch settings");
+    return await res.json();
+  } catch (err) {
+    console.error("fetchSettings error:", err);
+    return {
+      llm: { provider: "", api_key: "", base_url: "", active_model: "", fallback_model: "" },
+      services: [],
+      joins: [],
+    };
+  }
+}
+
+export async function saveSettings(settings: Partial<AppSettings>): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    return res.ok;
+  } catch (err) {
+    console.error("saveSettings error:", err);
+    return false;
+  }
+}

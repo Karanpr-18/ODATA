@@ -8,56 +8,46 @@ import {
   MoreHorizontal,
   Pencil,
   Trash2,
-  ChevronDown,
   Sun,
   Moon,
   Check,
   X,
-  Cpu,
   PanelLeftClose,
-  Network,
+  Settings,
 } from "lucide-react";
 import { useTheme } from "@/contexts/theme-context";
-import { Thread, MODELS } from "@/lib/types";
+import { Thread } from "@/lib/types";
 
 interface SidebarProps {
   threads: Thread[];
   activeThreadId: string | null;
-  selectedModel: string;
   isLoading: boolean;
   isOpen: boolean;
-  currentView: "chat" | "graph";
-  onViewChange: (view: "chat" | "graph") => void;
   onNewChat: () => void;
   onSelectThread: (id: string) => void;
   onDeleteThread: (id: string) => void;
   onRenameThread: (id: string, title: string) => void;
-  onModelChange: (model: string) => void;
   onToggleSidebar: () => void;
+  onOpenSettings: () => void;
 }
 
 export function Sidebar({
   threads,
   activeThreadId,
-  selectedModel,
   isLoading,
   isOpen,
-  currentView,
-  onViewChange,
   onNewChat,
   onSelectThread,
   onDeleteThread,
   onRenameThread,
-  onModelChange,
   onToggleSidebar,
+  onOpenSettings,
 }: SidebarProps) {
   const { theme, toggleTheme } = useTheme();
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
-  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const modelRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
   // Close dropdowns on outside click
@@ -65,9 +55,6 @@ export function Sidebar({
     function handleClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpenId(null);
-      }
-      if (modelRef.current && !modelRef.current.contains(e.target as Node)) {
-        setModelDropdownOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -100,8 +87,6 @@ export function Sidebar({
     setRenamingId(null);
     setRenameValue("");
   };
-
-  const selectedModelInfo = MODELS.find((m) => m.id === selectedModel) || MODELS[0];
 
   const getRelativeTime = (dateStr: string) => {
     try {
