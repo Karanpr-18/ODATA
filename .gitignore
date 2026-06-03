@@ -1,0 +1,53 @@
+# Python virtual environments
+backend/venv/
+venv/
+.venv/
+env/
+*env/
+
+# Python cache & build files
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Environment configuration files (contains sensitive credentials/API keys)
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Node dependencies & Next.js build outputs
+**/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# Database files & Docker volumes
+db/
+*.db
+*.sqlite
+.surreal_data/
+
+# OS / Editor configuration
+.DS_Store
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*~

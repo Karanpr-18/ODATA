@@ -1,0 +1,47 @@
+
+services:
+  # ──────────────────────────────────────────────
+  # SurrealDB — Graph + Vector Database
+  # ──────────────────────────────────────────────
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    container_name: sap-surrealdb
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./db/data:/data
+    command: start --user root --pass root --bind 0.0.0.0:8000 surrealkv:/data/sap.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "surreal", "isready", "--conn", "http://localhost:8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ──────────────────────────────────────────────
+  # Ollama — Local Embedding Engine
+  # ──────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sap-ollama
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  # ──────────────────────────────────────────────
+  # Ollama Model Puller — Auto-pulls nomic-embed-text
+  # ──────────────────────────────────────────────
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: sap-ollama-pull
+    depends_on:
+      - ollama
+    entrypoint: ["sh", "-c", "sleep 3 && ollama pull nomic-embed-text"]
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    restart: "no"
+
+volumes:
+  ollama_data:
