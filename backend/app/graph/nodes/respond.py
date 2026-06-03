@@ -196,7 +196,8 @@ async def format_response(state: AgentState) -> dict[str, Any]:
                     "user_id": "default",
                     "correction": correction_text,
                     "context": f"Self-healed {query_type} correction",
-                    "embedding": embedding
+                    "embedding": embedding,
+                    "status": "pending"
                 }
                 # Fix: Use SurrealClient's create method to avoid 400 Bad Request syntax issues with Rest API SQL queries
                 await db.create("agent_memory", mem_record)
@@ -308,7 +309,12 @@ async def format_response(state: AgentState) -> dict[str, Any]:
                 keys = list(parsed[0].keys())
                 for k in keys:
                     val = parsed[0][k]
-                    if isinstance(val, (int, float)) and not y_keys:
+                    is_valid_num = False
+                    if isinstance(val, (int, float)) and not isinstance(val, bool):
+                        import math
+                        if not math.isnan(val):
+                            is_valid_num = True
+                    if is_valid_num and not y_keys:
                         y_keys.append(k)
                     elif not x_key:
                         x_key = k
@@ -331,7 +337,12 @@ async def format_response(state: AgentState) -> dict[str, Any]:
                     keys = list(list_of_dicts[0].keys())
                     for k in keys:
                         val = list_of_dicts[0][k]
-                        if isinstance(val, (int, float)) and not y_keys:
+                        is_valid_num = False
+                        if isinstance(val, (int, float)) and not isinstance(val, bool):
+                            import math
+                            if not math.isnan(val):
+                                is_valid_num = True
+                        if is_valid_num and not y_keys:
                             y_keys.append(k)
                         elif not x_key:
                             x_key = k

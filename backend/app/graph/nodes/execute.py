@@ -152,6 +152,25 @@ async def execute_odata(state: AgentState) -> dict[str, Any]:
             "error": "No OData query to execute",
         }
 
+    # Static Query Schema Guardrails (Pre-execution validation)
+    if not existing_buffer:
+        from app.services.linter import validate_odata_query
+        matched_entity = state.get("matched_entity", {})
+        if matched_entity:
+            lint_err = validate_odata_query(generated_query, matched_entity)
+            if lint_err:
+                logger.warning("OData static linter rejected query: %s. Error: %s", generated_query, lint_err)
+                error_msg = f"Static Query Lint Error: {lint_err}"
+                updates = {
+                    "data_buffer": existing_buffer,
+                    "has_next_page": "",
+                    "error": error_msg,
+                }
+                if state.get("retry_count", 0) == 0:
+                    updates["first_failed_query"] = generated_query
+                    updates["first_error"] = error_msg
+                return updates
+
     logger.info("Executing OData query: %s", generated_query[:200])
 
     try:

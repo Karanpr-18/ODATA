@@ -53,7 +53,7 @@ def route_after_generate(state: AgentState) -> Literal["execute_odata", "run_san
 def route_after_execute(state: AgentState) -> Literal["execute_odata", "run_sandbox", "format_response", "generate_response"]:
     """Route after OData execution.
 
-    - If error exists and retry_count < 2 → generate_response (self-healing loop)
+    - If error exists and retry_count < 3 → generate_response (self-healing loop)
     - If @odata.nextLink exists → loop back to execute_odata
     - If calculation is needed → run_sandbox
     - Otherwise → format_response
@@ -63,7 +63,7 @@ def route_after_execute(state: AgentState) -> Literal["execute_odata", "run_sand
     has_next = state.get("has_next_page", "")
     needs_calc = state.get("needs_calculation", False)
 
-    if error and retry_count < 2:
+    if error and retry_count < 3:
         return "generate_response"
     elif has_next:
         return "execute_odata"
@@ -76,13 +76,13 @@ def route_after_execute(state: AgentState) -> Literal["execute_odata", "run_sand
 def route_after_sandbox(state: AgentState) -> Literal["generate_response", "format_response"]:
     """Route after sandbox execution.
 
-    - If error exists and retry_count < 2 → generate_response (self-healing loop)
+    - If error exists and retry_count < 3 → generate_response (self-healing loop)
     - Otherwise → format_response
     """
     error = state.get("error", "")
     retry_count = state.get("retry_count", 0)
 
-    if error and retry_count < 2:
+    if error and retry_count < 3:
         return "generate_response"
     return "format_response"
 

@@ -128,6 +128,7 @@ async def retrieve_context(state: AgentState) -> dict[str, Any]:
                     vector::similarity::cosine(embedding, {vector_json}) AS score
                 FROM agent_memory
                 WHERE embedding <|3, cosine|> {vector_json}
+                  AND status = 'verified'
                 ORDER BY score DESC
                 LIMIT 3;
             """)

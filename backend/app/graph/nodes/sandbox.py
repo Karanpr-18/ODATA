@@ -45,6 +45,22 @@ async def run_sandbox(state: AgentState) -> dict[str, Any]:
     elif "```" in code:
         code = code.split("```")[1].split("```")[0].strip()
 
+    # Static Python Script Schema Guardrails & AST Linting
+    from app.services.linter import validate_python_script
+    matched_entity = state.get("matched_entity", {})
+    lint_err = validate_python_script(code, matched_entity)
+    if lint_err:
+        logger.warning("Python static AST linter rejected script. Error: %s", lint_err)
+        error_msg = f"Static AST Lint Error: {lint_err}"
+        updates = {
+            "calculation_result": "",
+            "error": error_msg,
+        }
+        if state.get("retry_count", 0) == 0:
+            updates["first_failed_query"] = generated_query
+            updates["first_error"] = error_msg
+        return updates
+
     container_name = f"sap-sandbox-{uuid.uuid4().hex[:12]}"
     container_id: str | None = None
 
@@ -110,6 +126,21 @@ try:
             return pd.DataFrame(data)
         return _orig_read_json(path_or_buf, *args, **kwargs)
     pd.read_json = custom_read_json
+
+    # Patch groupby to default to dropna=False to avoid dropping rows with null keys
+    _orig_df_groupby = pd.DataFrame.groupby
+    def custom_df_groupby(self, *args, **kwargs):
+        if 'dropna' not in kwargs:
+            kwargs['dropna'] = False
+        return _orig_df_groupby(self, *args, **kwargs)
+    pd.DataFrame.groupby = custom_df_groupby
+
+    _orig_series_groupby = pd.Series.groupby
+    def custom_series_groupby(self, *args, **kwargs):
+        if 'dropna' not in kwargs:
+            kwargs['dropna'] = False
+        return _orig_series_groupby(self, *args, **kwargs)
+    pd.Series.groupby = custom_series_groupby
 except:
     pass
 

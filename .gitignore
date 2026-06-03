@@ -4,6 +4,7 @@ venv/
 .venv/
 env/
 *env/
+agent_architecture_comparison.md
 
 # Python cache & build files
 **/__pycache__/

@@ -156,6 +156,11 @@ TOOLS = [
                     "items": {"type": "number"},
                     "description": "768-dim embedding of the correction",
                 },
+                "status": {
+                    "type": "string",
+                    "description": "Verification status: 'pending' or 'verified'",
+                    "default": "verified",
+                },
             },
             "required": ["correction", "embedding"],
         },
@@ -194,10 +199,11 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
             limit = arguments.get("limit", 5)
             vec_json = json.dumps(embedding)
             results = await surreal_query(f"""
-                SELECT correction, context,
+                SELECT correction, context, status,
                     vector::similarity::cosine(embedding, {vec_json}) AS score
                 FROM agent_memory
                 WHERE embedding <|{limit}, cosine|> {vec_json}
+                  AND status = 'verified'
                 ORDER BY score DESC;
             """)
             return json.dumps(results, default=str)
@@ -207,12 +213,14 @@ async def handle_tool_call(name: str, arguments: dict) -> str:
             context = arguments.get("context", "").replace("'", "\\'")
             user_id = arguments.get("user_id", "default")
             embedding = json.dumps(arguments["embedding"])
+            status = arguments.get("status", "verified")
             results = await surreal_query(f"""
                 CREATE agent_memory SET
                     user_id = '{user_id}',
                     correction = '{correction}',
                     context = '{context}',
                     embedding = {embedding},
+                    status = '{status}',
                     created_at = time::now();
             """)
             return json.dumps(results, default=str)
