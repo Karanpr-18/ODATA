@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
+    mistral_api_key: str = ""
 
     # ── SurrealDB ──
     surreal_url: str = "ws://localhost:8001/rpc"

@@ -195,10 +195,9 @@ export async function fetchSchemaGraph(): Promise<{ nodes: any[]; edges: any[] }
 
 export interface LLMConfig {
   provider: string;
-  api_key: string;
-  base_url: string;
   active_model: string;
   fallback_model: string;
+  api_keys: Record<string, string>;
 }
 
 export interface ServiceConfig {
@@ -231,7 +230,7 @@ export async function fetchSettings(): Promise<AppSettings> {
   } catch (err) {
     console.error("fetchSettings error:", err);
     return {
-      llm: { provider: "", api_key: "", base_url: "", active_model: "", fallback_model: "" },
+      llm: { provider: "", active_model: "", fallback_model: "", api_keys: {} },
       services: [],
       joins: [],
     };

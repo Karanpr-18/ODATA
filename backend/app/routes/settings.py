@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.services.db_client import get_db
+from app.config import get_settings as get_app_config
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings")
@@ -24,10 +25,9 @@ router = APIRouter(prefix="/api/settings")
 class LLMConfig(BaseModel):
     """LLM provider configuration."""
     provider: str = ""
-    api_key: str = ""
-    base_url: str = ""
     active_model: str = ""
     fallback_model: str = ""
+    api_keys: dict[str, str] = Field(default_factory=dict)
 
 
 class ServiceConfig(BaseModel):
@@ -59,19 +59,46 @@ class SettingsPayload(BaseModel):
 async def get_settings():
     """Retrieve current application settings from SurrealDB."""
     db = get_db()
+    app_config = get_app_config()
+    default_api_keys = {
+        "openai": app_config.openai_api_key or "",
+        "groq": app_config.groq_api_key or "",
+        "anthropic": app_config.anthropic_api_key or "",
+        "google": app_config.gemini_api_key or "",
+        "mistral": app_config.mistral_api_key or "",
+    }
+
     try:
         results = await db.query("SELECT * FROM settings WHERE id = settings:config;")
         if results and isinstance(results, list) and len(results) > 0:
             record = results[0]
+            db_llm = record.get("llm", {})
+            db_api_keys = db_llm.get("api_keys", {})
+            
+            # Merge: Use env keys if DB keys are missing or empty
+            merged_keys = {}
+            for k, v in default_api_keys.items():
+                merged_keys[k] = db_api_keys.get(k) or v
+
             return {
-                "llm": record.get("llm", {
-                    "provider": "",
-                    "api_key": "",
-                    "base_url": "",
-                    "active_model": "",
-                    "fallback_model": ""
-                }),
-                "services": record.get("services", []),
+                "llm": {
+                    "provider": db_llm.get("provider", app_config.llm_provider),
+                    "active_model": db_llm.get("active_model", app_config.groq_default_model),
+                    "fallback_model": db_llm.get("fallback_model", ""),
+                    "api_keys": merged_keys
+                },
+                "services": record.get("services") if record.get("services") else [
+                    {
+                        "name": "SAP OData Gateway (Default)",
+                        "url": "https://sap-gateway.example.com/sap/opu/odata/sap/",
+                        "description": "Mocked SAP Gateway Service"
+                    },
+                    {
+                        "name": "Northwind V4",
+                        "url": "https://services.odata.org/V4/Northwind/Northwind.svc",
+                        "description": "Public OData V4 testing service"
+                    }
+                ],
                 "joins": record.get("joins", []),
             }
     except Exception as e:
@@ -80,13 +107,23 @@ async def get_settings():
     # Return defaults if no record exists
     return {
         "llm": {
-            "provider": "",
-            "api_key": "",
-            "base_url": "",
-            "active_model": "",
-            "fallback_model": ""
+            "provider": app_config.llm_provider,
+            "active_model": app_config.groq_default_model,
+            "fallback_model": "",
+            "api_keys": default_api_keys
         },
-        "services": [],
+        "services": [
+            {
+                "name": "SAP OData Gateway (Default)",
+                "url": "https://sap-gateway.example.com/sap/opu/odata/sap/",
+                "description": "Mocked SAP Gateway Service"
+            },
+            {
+                "name": "Northwind V4",
+                "url": "https://services.odata.org/V4/Northwind/Northwind.svc",
+                "description": "Public OData V4 testing service"
+            }
+        ],
         "joins": [],
     }
 

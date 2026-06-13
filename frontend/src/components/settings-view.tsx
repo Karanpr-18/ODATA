@@ -30,6 +30,20 @@ import { GraphExplorer } from "@/components/graph-explorer";
 
 type SettingsTab = "models" | "services" | "graph";
 
+const PROVIDERS: Record<string, string[]> = {
+  groq: [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "openai/gpt-oss-120b",
+    "qwen/qwen3-32b",
+  ],
+  openai: ["gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "gpt-4o-mini"],
+  mistral: ["mistral-large-latest", "mistral-medium", "mistral-small-latest", "open-mixtral-8x22b", "open-mistral-7b"],
+  google: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"],
+  anthropic: ["claude-3-5-sonnet-20240620", "claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307", "claude-2.1"]
+};
+
 interface SettingsViewProps {
   onBack: () => void;
 }
@@ -43,10 +57,9 @@ export function SettingsView({ onBack }: SettingsViewProps) {
   // LLM State
   const [llm, setLlm] = useState<LLMConfig>({
     provider: "",
-    api_key: "",
-    base_url: "",
     active_model: "",
     fallback_model: "",
+    api_keys: {},
   });
   const [showApiKey, setShowApiKey] = useState(false);
 
@@ -77,7 +90,7 @@ export function SettingsView({ onBack }: SettingsViewProps) {
   const loadSettings = async () => {
     setLoading(true);
     const data = await fetchSettings();
-    setLlm(data.llm || { provider: "", api_key: "", base_url: "", active_model: "", fallback_model: "" });
+    setLlm(data.llm || { provider: "", active_model: "", fallback_model: "", api_keys: {} });
     setServices(data.services || []);
     setJoins(data.joins || []);
     setLoading(false);
@@ -205,84 +218,90 @@ export function SettingsView({ onBack }: SettingsViewProps) {
               </p>
 
               <div className="settings-form-grid">
-                {/* Provider */}
-                <div className="settings-field">
-                  <label className="settings-label">Provider</label>
-                  <input
-                    type="text"
-                    className="settings-input"
-                    placeholder="e.g., Groq, OpenAI, Anthropic"
-                    value={llm.provider}
-                    onChange={(e) => setLlm({ ...llm, provider: e.target.value })}
-                  />
-                </div>
-
-                {/* Base URL */}
-                <div className="settings-field">
-                  <label className="settings-label">Base URL</label>
-                  <input
-                    type="text"
-                    className="settings-input"
-                    placeholder="e.g., https://api.groq.com/openai/v1"
-                    value={llm.base_url}
-                    onChange={(e) => setLlm({ ...llm, base_url: e.target.value })}
-                  />
-                </div>
-
-                {/* API Key */}
-                <div className="settings-field" style={{ gridColumn: "1 / -1" }}>
-                  <label className="settings-label">API Key</label>
-                  <div style={{ position: "relative" }}>
-                    <input
-                      type={showApiKey ? "text" : "password"}
-                      className="settings-input"
-                      placeholder="sk-..."
-                      value={llm.api_key}
-                      onChange={(e) => setLlm({ ...llm, api_key: e.target.value })}
-                      style={{ paddingRight: 42 }}
-                    />
-                    <button
-                      onClick={() => setShowApiKey(!showApiKey)}
-                      style={{
-                        position: "absolute",
-                        right: 8,
-                        top: "50%",
-                        transform: "translateY(-50%)",
-                        background: "none",
-                        border: "none",
-                        color: "var(--text-tertiary)",
-                        cursor: "pointer",
-                        padding: 4,
-                        display: "flex",
-                      }}
-                    >
-                      {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </div>
-                </div>
-
                 {/* Active Model */}
                 <div className="settings-field">
                   <label className="settings-label">Primary Model</label>
-                  <input
-                    type="text"
+                  <select
                     className="settings-input"
-                    placeholder="e.g., llama-3.3-70b-versatile"
                     value={llm.active_model}
                     onChange={(e) => setLlm({ ...llm, active_model: e.target.value })}
-                  />
+                  >
+                    <option value="">Select a model...</option>
+                    {Object.entries(PROVIDERS).map(([p, models]) => (
+                      <optgroup key={p} label={p.charAt(0).toUpperCase() + p.slice(1)}>
+                        {models.map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
                 </div>
 
                 {/* Fallback Model */}
                 <div className="settings-field">
                   <label className="settings-label">Fallback Model</label>
-                  <input
-                    type="text"
+                  <select
                     className="settings-input"
-                    placeholder="e.g., llama-3.1-8b-instant"
                     value={llm.fallback_model}
                     onChange={(e) => setLlm({ ...llm, fallback_model: e.target.value })}
-                  />
+                  >
+                    <option value="">Select a model...</option>
+                    {Object.entries(PROVIDERS).map(([p, models]) => (
+                      <optgroup key={p} label={p.charAt(0).toUpperCase() + p.slice(1)}>
+                        {models.map((m) => (
+                          <option key={m} value={m}>{m}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+
+                {/* API Keys */}
+                <div className="settings-field" style={{ gridColumn: "1 / -1", marginTop: 12 }}>
+                  <label className="settings-label" style={{ marginBottom: 4 }}>Provider API Keys</label>
+                  <p className="settings-section-desc" style={{ marginBottom: 16, fontSize: 12 }}>
+                    Configure API keys for each provider. Keys defined in your .env file are automatically populated.
+                  </p>
+                  
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    {Object.keys(PROVIDERS).map(p => (
+                      <div key={p} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ width: 100, fontSize: 13, fontWeight: 500, color: "var(--text-secondary)" }}>
+                          {p.charAt(0).toUpperCase() + p.slice(1)}
+                        </div>
+                        <div style={{ position: "relative", flex: 1 }}>
+                          <input
+                            type={showApiKey ? "text" : "password"}
+                            className="settings-input"
+                            placeholder={`API Key`}
+                            value={llm.api_keys?.[p] || ""}
+                            onChange={(e) => setLlm({ 
+                              ...llm, 
+                              api_keys: { ...llm.api_keys, [p]: e.target.value }
+                            })}
+                            style={{ width: "100%", paddingRight: 42 }}
+                          />
+                          <button
+                            onClick={() => setShowApiKey(!showApiKey)}
+                            style={{
+                              position: "absolute",
+                              right: 8,
+                              top: "50%",
+                              transform: "translateY(-50%)",
+                              background: "none",
+                              border: "none",
+                              color: "var(--text-tertiary)",
+                              cursor: "pointer",
+                              padding: 4,
+                              display: "flex",
+                            }}
+                          >
+                            {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
