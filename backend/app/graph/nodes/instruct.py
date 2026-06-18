@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 INSTRUCTOR_SYSTEM_PROMPT = """You are an expert SAP Database Supervisor and Query Router.
 Your job is to analyze the user's natural language request and select the single best target SAP entity from a list of vector-matched candidates.
 
+Each candidate belongs to an **MCP** (Model Context Protocol service). When multiple MCPs are available, always prefer entities from the MCP whose name/description most closely matches the user's topic (e.g. prefer a "Sales" MCP for revenue queries, and an "Inventory" MCP for stock queries).
+
 For the user's request, compare the candidates and select the one that mathematically and semantically fits the data required (e.g. if the user wants sales order totals, look for fields like 'ExtendedPrice' or 'Subtotal' in candidate tables; do not select a table that only has 'Freight' or logistics info if an invoices/sales-total table is available).
 
 ## How to choose the best Candidate:
@@ -49,8 +51,8 @@ For the user's request, compare the candidates and select the one that mathemati
 
 ## Instructions:
 1. **Analyze** the user query.
-2. **Review** the candidate entity sets, their properties, keys, and descriptions.
-3. **Select** the single best matching candidate.
+2. **Review** the candidate entity sets, their MCP names, properties, keys, and descriptions.
+3. **Select** the single best matching candidate (prefer the most relevant MCP first, then the best entity within it).
 4. **Identify** the exact fields/columns needed to satisfy the filters and calculation metrics.
 5. **Formulate** a structured, step-by-step query plan.
 
@@ -85,13 +87,14 @@ async def instruct_query(state: AgentState) -> dict[str, Any]:
         last = messages[-1]
         user_query = last.content if hasattr(last, "content") else str(last)
 
-    # Format candidates for prompt
+    # Format candidates for prompt — include MCP name so supervisor can weight routing
     candidates_data = []
     for c in candidates:
         candidates_data.append({
             "id": c.get("id"),
             "name": c.get("name"),
             "entity_set": c.get("entity_set"),
+            "mcp": c.get("module", "Default"),          # MCP name — helps supervisor pick the right service
             "description": c.get("description"),
             "key_fields": c.get("key_fields", [])
         })

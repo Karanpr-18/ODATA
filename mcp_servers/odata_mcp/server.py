@@ -198,20 +198,39 @@ async def execute_odata_call(record: dict, arguments: dict) -> list:
     base_url_slash = service_url if service_url.endswith("/") else f"{service_url}/"
     full_url = urljoin(base_url_slash, odata_path)
 
-    # Build params
-    params = {}
-    params["$inlinecount"] = "allpages" # Request total count for UI pagination feedback
-    
+    # Detect OData version from the service URL to pick the right count parameter.
+    # OData v4 uses $count=true; OData v2 (SAP, classic Northwind) uses $inlinecount=allpages.
+    service_url_lower = service_url.lower()
+    is_v4 = (
+        "/v4/" in service_url_lower
+        or "odata.org/v4" in service_url_lower
+        or "$count" in service_url_lower          # explicit hint
+    )
+
+    # Build query string manually to prevent httpx from percent-encoding the $ signs
+    # (OData servers expect literal $filter, $select, etc. — not %24filter)
+    qs_parts = []
+
+    if is_v4:
+        qs_parts.append("$count=true")
+    else:
+        qs_parts.append("$inlinecount=allpages")
+
     if arguments.get("filter"):
-        params["$filter"] = arguments["filter"]
+        import urllib.parse
+        filter_val = urllib.parse.quote(arguments["filter"], safe="()*,\\'= ")
+        qs_parts.append(f"$filter={filter_val}")
     if arguments.get("select"):
-        params["$select"] = arguments["select"]
+        qs_parts.append(f"$select={arguments['select']}")
     if arguments.get("top") is not None:
-        params["$top"] = arguments["top"]
+        qs_parts.append(f"$top={arguments['top']}")
     if arguments.get("skip") is not None:
-        params["$skip"] = arguments["skip"]
+        qs_parts.append(f"$skip={arguments['skip']}")
     if arguments.get("expand"):
-        params["$expand"] = arguments["expand"]
+        qs_parts.append(f"$expand={arguments['expand']}")
+
+    query_string = "&".join(qs_parts)
+    request_url = f"{full_url}?{query_string}" if query_string else full_url
 
     headers = {
         "Accept": "application/json",
@@ -219,24 +238,24 @@ async def execute_odata_call(record: dict, arguments: dict) -> list:
     if settings.sap_client:
         headers["sap-client"] = settings.sap_client
 
-    logger.info("Executing OData HTTP call: %s with params %s", full_url, params)
+    logger.info("Executing OData HTTP call: %s", request_url)
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(full_url, params=params, headers=headers)
+        response = await client.get(request_url, headers=headers)
         response.raise_for_status()
         data = response.json()
 
         results = []
         total_count = None
-        
+
         if isinstance(data, list):
             results = data
         elif isinstance(data, dict):
-            # OData v4
+            # OData v4 — @odata.count / value
             if "@odata.count" in data:
                 total_count = data["@odata.count"]
             if "value" in data:
                 results = data["value"]
-            # OData v2
+            # OData v2 — d.results / d.__count
             elif "d" in data:
                 d_data = data["d"]
                 if isinstance(d_data, dict):
@@ -252,13 +271,13 @@ async def execute_odata_call(record: dict, arguments: dict) -> list:
                     results = [d_data]
             else:
                 results = [data]
-                
+
         try:
             if total_count is not None:
                 total_count = int(total_count)
         except (ValueError, TypeError):
             total_count = None
-            
+
         return {"results": results, "total_count": total_count}
 
 

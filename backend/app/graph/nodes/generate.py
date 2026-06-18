@@ -233,25 +233,48 @@ async def generate_response(state: AgentState) -> dict[str, Any]:
     # Fetch registered MCP OData tools dynamically
     mcp_tools = await get_mcp_tools()
 
-    # Filter tool bindings to the minimum necessary set to save input tokens.
-    # Strategy: try to bind ONLY the single exact tool for the matched entity first.
-    # If that fails (custom or static entity IDs), fall back to the service prefix filter.
-    if matched_entity and matched_entity.get("module"):
-        safe_service = matched_entity.get("module", "").lower().replace(" ", "_").replace("-", "_")
-        entity_set = matched_entity.get("entity_set", "").lower().replace(" ", "_").replace("-", "_")
-        exact_tool_name = f"fetch_{safe_service}_{entity_set}"
+    # ── Tool Binding Strategy (3-tier, fewest tokens first) ──
+    # Each MCP the user creates is a separate tool namespace. We want to bind
+    # ONLY the single tool that matches the entity selected by the supervisor.
+    #
+    # Tier 1: Exact match on "fetch_{module}_{entity_set}"
+    #   → Works perfectly for UI-registered MCPs with named modules.
+    # Tier 2: Entity-suffix match "*_{entity_set}" across all tools
+    #   → Handles legacy "Dynamic" module entities (old sync_odata.py) where
+    #     all entities share module="Dynamic". Picks the right entity regardless.
+    # Tier 3: Service-prefix fallback "fetch_{module}_*"
+    #   → Last resort if entity set name is ambiguous across services.
+    if matched_entity:
+        entity_set_raw = matched_entity.get("entity_set", "")
+        module_raw = matched_entity.get("module", "")
+        safe_service = module_raw.lower().replace(" ", "_").replace("-", "_")
+        safe_entity = entity_set_raw.lower().replace(" ", "_").replace("-", "_")
+
+        # Tier 1: exact match
+        exact_tool_name = f"fetch_{safe_service}_{safe_entity}"
         exact_match = [t for t in mcp_tools if t.name == exact_tool_name]
         if exact_match:
-            # Perfect single-tool binding — minimum possible token overhead
             mcp_tools = exact_match
-            logger.info("Tool binding: exact match for '%s' (1 tool bound)", exact_tool_name)
-        else:
-            # Fallback: bind all tools that share the same service prefix
-            prefix = f"fetch_{safe_service}_"
-            filtered_tools = [t for t in mcp_tools if t.name.startswith(prefix)]
-            if filtered_tools:
-                mcp_tools = filtered_tools
-            logger.info("Tool binding: service prefix match for '%s' (%d tools bound)", prefix, len(mcp_tools))
+            logger.info("Tool binding [T1-exact]: '%s' (1 tool)", exact_tool_name)
+
+        # Tier 2: entity-suffix match — entity set appears at end of tool name
+        elif safe_entity:
+            suffix = f"_{safe_entity}"
+            suffix_match = [t for t in mcp_tools if t.name.endswith(suffix)]
+            if suffix_match:
+                # If multiple services share the same entity name, prefer the
+                # one whose service prefix matches the matched module.
+                preferred = [t for t in suffix_match if t.name.startswith(f"fetch_{safe_service}_")]
+                mcp_tools = preferred if preferred else suffix_match[:1]
+                logger.info("Tool binding [T2-suffix]: '%s' matched '%s' (1 tool)", suffix, mcp_tools[0].name)
+
+            # Tier 3: service-prefix fallback
+            elif safe_service:
+                prefix = f"fetch_{safe_service}_"
+                filtered = [t for t in mcp_tools if t.name.startswith(prefix)]
+                if filtered:
+                    mcp_tools = filtered
+                logger.info("Tool binding [T3-prefix]: '%s' (%d tools)", prefix, len(mcp_tools))
 
     tools_desc = "\n".join(f"- {t.name}: {t.description}" for t in mcp_tools)
     

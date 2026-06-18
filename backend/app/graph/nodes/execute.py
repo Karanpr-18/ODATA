@@ -148,36 +148,50 @@ async def run_mcp_tool(tool_name: str, arguments: dict) -> list:
         os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")),
         "mcp_servers/odata_mcp/server.py"
     )
-    
+
     server_params = StdioServerParameters(
         command=sys.executable,
         args=[server_script],
         env=os.environ.copy()
     )
-    
+
     logger.info("Spawning MCP client: script=%s, tool=%s, args=%s", server_script, tool_name, arguments)
-    async with stdio_client(server_params) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            result = await session.call_tool(tool_name, arguments)
-            
-            text_val = ""
-            for item in result.content:
-                if hasattr(item, "text"):
-                    text_val += item.text
-                elif isinstance(item, dict) and "text" in item:
-                    text_val += item["text"]
-            
-            try:
-                data = json.loads(text_val)
-                if isinstance(data, dict):
-                    if "error" in data:
-                        raise Exception(data["error"])
-                    if "results" in data or "total_count" in data:
-                        return data
-                return data if isinstance(data, list) else [data]
-            except json.JSONDecodeError:
-                raise Exception(f"Failed to parse tool result as JSON: {text_val}")
+
+    # Collect the raw text INSIDE the context managers but do NOT raise inside them.
+    # Raising inside an anyio TaskGroup context causes the exception to be wrapped in
+    # an ExceptionGroup, which the caller cannot easily catch. Instead, we store any
+    # error text and raise after the contexts are fully cleaned up.
+    text_val = ""
+    mcp_error = None
+    try:
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments)
+
+                for item in result.content:
+                    if hasattr(item, "text"):
+                        text_val += item.text
+                    elif isinstance(item, dict) and "text" in item:
+                        text_val += item["text"]
+    except* Exception as eg:
+        # Python 3.11+ ExceptionGroup unwrapping — surface the first real error
+        inner = eg.exceptions[0] if eg.exceptions else eg
+        raise Exception(f"OData MCP execution error: {inner}") from inner
+
+    # Parse result safely outside the async context
+    try:
+        data = json.loads(text_val)
+    except json.JSONDecodeError:
+        raise Exception(f"Failed to parse tool result as JSON: {text_val[:200]}")
+
+    if isinstance(data, dict):
+        if "error" in data:
+            raise Exception(data["error"])
+        if "results" in data or "total_count" in data:
+            return data
+
+    return data if isinstance(data, list) else [data]
 
 
 async def execute_odata(state: AgentState) -> dict[str, Any]:
