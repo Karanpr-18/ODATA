@@ -42,9 +42,9 @@ async def retrieve_context(state: AgentState) -> dict[str, Any]:
                     nav_properties, filter_fields,
                     vector::similarity::cosine(embedding, {vector_json}) AS score
                 FROM sap_entities
-                WHERE embedding <|15, cosine|> {vector_json}
+                WHERE embedding <|4, cosine|> {vector_json}
                 ORDER BY score DESC
-                LIMIT 15;
+                LIMIT 4;
             """)
 
             if entities:

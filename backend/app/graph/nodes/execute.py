@@ -7,7 +7,12 @@ When ready, swap the mock with real HTTP calls to the SAP Gateway.
 
 import json
 import logging
+import os
+import sys
 from typing import Any
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from app.config import get_settings
 from app.graph.state import AgentState
@@ -137,8 +142,51 @@ def _match_mock_data(query: str) -> list[dict]:
     return MOCK_SAP_DATA.get("FI_InvoiceSet", [])
 
 
+async def run_mcp_tool(tool_name: str, arguments: dict) -> list:
+    """Connect to odata_mcp server, call the tool, and return list of results."""
+    server_script = os.path.join(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")),
+        "mcp_servers/odata_mcp/server.py"
+    )
+    
+    server_params = StdioServerParameters(
+        command=sys.executable,
+        args=[server_script],
+        env=os.environ.copy()
+    )
+    
+    logger.info("Spawning MCP client: script=%s, tool=%s, args=%s", server_script, tool_name, arguments)
+    async with stdio_client(server_params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            result = await session.call_tool(tool_name, arguments)
+            
+            text_val = ""
+            for item in result.content:
+                if hasattr(item, "text"):
+                    text_val += item.text
+                elif isinstance(item, dict) and "text" in item:
+                    text_val += item["text"]
+            
+            try:
+                data = json.loads(text_val)
+                if isinstance(data, dict):
+                    if "error" in data:
+                        raise Exception(data["error"])
+                    if "results" in data or "total_count" in data:
+                        return data
+                return data if isinstance(data, list) else [data]
+            except json.JSONDecodeError:
+                raise Exception(f"Failed to parse tool result as JSON: {text_val}")
+
+
 async def execute_odata(state: AgentState) -> dict[str, Any]:
-    """Execute the generated OData query against SAP Gateway or real OData Service."""
+    """Execute the generated OData query via the odata_mcp server."""
+    import sys
+    import os
+    from urllib.parse import urlparse, parse_qs
+    from app.services.db_client import get_db
+
     settings = get_settings()
     generated_query = state.get("generated_query", "")
     if generated_query:
@@ -156,7 +204,17 @@ async def execute_odata(state: AgentState) -> dict[str, Any]:
     if not existing_buffer:
         from app.services.linter import validate_odata_query
         matched_entity = state.get("matched_entity", {})
-        if matched_entity:
+        
+        # If it is not a raw query but a JSON tool call, we bypass raw query linter
+        is_json_tool = False
+        try:
+            parsed_json = json.loads(generated_query)
+            if isinstance(parsed_json, dict) and "tool" in parsed_json:
+                is_json_tool = True
+        except:
+            pass
+
+        if not is_json_tool and matched_entity:
             lint_err = validate_odata_query(generated_query, matched_entity)
             if lint_err:
                 logger.warning("OData static linter rejected query: %s. Error: %s", generated_query, lint_err)
@@ -171,107 +229,100 @@ async def execute_odata(state: AgentState) -> dict[str, Any]:
                     updates["first_error"] = error_msg
                 return updates
 
-    logger.info("Executing OData query: %s", generated_query[:200])
+    logger.info("Executing tool-based OData request: %s", generated_query[:200])
 
     try:
-        is_mock = "example.com" in settings.sap_odata_base_url or not settings.sap_odata_base_url
+        # Determine the tool name and arguments
+        tool_name = ""
+        tool_args = {}
 
-        if is_mock:
-            logger.info("Running OData query in MOCK mode")
-            mock_results = _match_mock_data(generated_query)
-            new_buffer = existing_buffer + mock_results
-            return {
-                "data_buffer": new_buffer,
-                "has_next_page": "",
-                "error": "",
-            }
+        # 1. Check if the generated query is already a serialized tool call JSON
+        try:
+            parsed_json = json.loads(generated_query)
+            if isinstance(parsed_json, dict) and "tool" in parsed_json:
+                tool_name = parsed_json["tool"]
+                tool_args = parsed_json.get("arguments", {})
+        except:
+            pass
 
-        # ── REAL IMPLEMENTATION ──
-        import httpx
-        base_url = settings.sap_odata_base_url
-        
-        # Resolve any relative queries, full URLs, or parent traversal path segments (../../../) in nextLinks
-        from urllib.parse import urljoin
-        base_url_slash = base_url if base_url.endswith("/") else f"{base_url}/"
-        
-        # If it is not a full absolute URL, strip leading slash to prevent urljoin from stripping base URL path
-        query_str = generated_query
-        if not query_str.startswith("http://") and not query_str.startswith("https://"):
-            query_str = query_str.lstrip("/")
+        # 2. Reconstruct tool call from raw OData URL string if needed (backward compatibility)
+        if not tool_name:
+            # Parse path and query parameters from raw query string
+            parsed_url = urlparse(generated_query)
+            entity_set_path = parsed_url.path.strip("/")
+            query_params = parse_qs(parsed_url.query)
+
+            db = get_db()
+            # Find the registered entity set to resolve the service module namespace
+            records = await db.query("SELECT * FROM sap_entities WHERE entity_set = $entity_set;", {"entity_set": entity_set_path})
+            if not records:
+                # Fallback case-insensitive match
+                all_entities = await db.query("SELECT * FROM sap_entities;")
+                for r in all_entities:
+                    if r.get("entity_set", "").lower() == entity_set_path.lower():
+                        records = [r]
+                        break
+
+            if not records:
+                raise Exception(f"Entity set '{entity_set_path}' is not registered in SurrealDB. Register it in Settings first.")
+
+            record = records[0]
+            service_name = record.get("module", "default")
+            safe_service = service_name.lower().replace(" ", "_").replace("-", "_")
+            safe_entity = entity_set_path.lower().replace(" ", "_").replace("-", "_")
             
-        full_url = urljoin(base_url_slash, query_str)
+            tool_name = f"fetch_{safe_service}_{safe_entity}"
 
-        logger.info("Calling real OData service: %s", full_url)
+            # Map OData query parameters to tool arguments
+            for key, val_list in query_params.items():
+                val = val_list[0] if val_list else ""
+                if key == "$filter":
+                    tool_args["filter"] = val
+                elif key == "$select":
+                    tool_args["select"] = val
+                elif key == "$top":
+                    try:
+                        tool_args["top"] = int(val)
+                    except:
+                        pass
+                elif key == "$skip":
+                    try:
+                        tool_args["skip"] = int(val)
+                    except:
+                        pass
+                elif key == "$expand":
+                    tool_args["expand"] = val
 
-        headers = {
-            "Accept": "application/json",
+        # 3. Call the tool using our MCP stdio client
+        mcp_response = await run_mcp_tool(tool_name, tool_args)
+        
+        results = []
+        total_count = None
+        
+        if isinstance(mcp_response, dict) and ("results" in mcp_response or "total_count" in mcp_response):
+            results = mcp_response.get("results", [])
+            total_count = mcp_response.get("total_count")
+        elif isinstance(mcp_response, list):
+            results = mcp_response
+            
+        new_buffer = existing_buffer + results
+        logger.info(
+            "MCP OData execution returned %d records (total buffer: %d, total_count: %s).",
+            len(results),
+            len(new_buffer),
+            str(total_count)
+        )
+
+        return {
+            "data_buffer": new_buffer,
+            "has_next_page": "", # NextLink handling is managed inside the tool or skipped
+            "total_count": total_count,
+            "error": "",
         }
-        if settings.sap_client:
-            headers["sap-client"] = settings.sap_client
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(full_url, headers=headers)
-            
-            # Inline self-healing repair for 404 where the base URL path gets lost
-            if response.status_code == 404:
-                import urllib.parse
-                parsed_base = urllib.parse.urlparse(base_url)
-                parsed_full = urllib.parse.urlparse(full_url)
-                if parsed_base.path and parsed_base.path.strip("/") not in parsed_full.path:
-                    repaired_path = parsed_base.path.rstrip("/") + "/" + parsed_full.path.lstrip("/")
-                    repaired_url = urllib.parse.urlunparse(parsed_full._replace(path=repaired_path))
-                    logger.warning("OData request returned 404. Attempting path repair. Original: %s, Repaired: %s", full_url, repaired_url)
-                    response = await client.get(repaired_url, headers=headers)
-                    full_url = repaired_url
-                    
-            response.raise_for_status()
-            data = response.json()
-
-            results = []
-            next_link = ""
-
-            if isinstance(data, list):
-                results = data
-            elif isinstance(data, dict):
-                # OData v4 structure: { "value": [...], "@odata.nextLink": "..." }
-                if "value" in data:
-                    results = data["value"]
-                    next_link = data.get("@odata.nextLink", "")
-                # OData v2 structure: { "d": { "results": [...], "__next": "..." } }
-                elif "d" in data:
-                    d_data = data["d"]
-                    if isinstance(d_data, dict):
-                        if "results" in d_data:
-                            results = d_data["results"]
-                            next_link = d_data.get("__next", "")
-                        else:
-                            # Direct object
-                            results = [d_data]
-                    elif isinstance(d_data, list):
-                        results = d_data
-                    else:
-                        results = [d_data]
-                else:
-                    results = [data]
-
-            new_buffer = existing_buffer + results
-            logger.info(
-                "Real OData execution returned %d records (total buffer: %d). Next link: %s",
-                len(results),
-                len(new_buffer),
-                next_link,
-            )
-
-            return {
-                "data_buffer": new_buffer,
-                "has_next_page": next_link,
-                "generated_query": next_link if next_link else generated_query,
-                "error": "",
-            }
 
     except Exception as e:
-        logger.error("OData execution failed: %s", e)
-        error_msg = f"OData execution error: {e}"
+        logger.error("OData MCP execution failed: %s", e)
+        error_msg = f"OData MCP execution error: {e}"
         updates = {
             "data_buffer": existing_buffer,
             "has_next_page": "",
@@ -281,3 +332,4 @@ async def execute_odata(state: AgentState) -> dict[str, Any]:
             updates["first_failed_query"] = generated_query
             updates["first_error"] = error_msg
         return updates
+

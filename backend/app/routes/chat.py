@@ -98,7 +98,8 @@ async def chat_endpoint(request: Request):
                 state_update = chunk[node_name]
                 
                 # Merge the updates into our result state
-                result.update(state_update)
+                if state_update and isinstance(state_update, dict):
+                    result.update(state_update)
                 
                 # Build incremental pipeline logs based on which node just completed
                 if node_name == "embed_query":
@@ -148,7 +149,12 @@ async def chat_endpoint(request: Request):
                     if error:
                         current_log += f"\n    *   *Error*: {error}"
                     else:
-                        current_log += f"\n    *   *Succeeded*: retrieved **{len(data_buffer)}** records from service."
+                        total_count = result.get("total_count")
+                        if total_count is not None:
+                            current_log += f"\n    *   *Succeeded*: retrieved **{len(data_buffer)}** records (Showing {len(data_buffer)}/{total_count} records)."
+                        else:
+                            current_log += f"\n    *   *Succeeded*: retrieved **{len(data_buffer)}** records from service."
+                        
                         if has_next:
                             current_log += f"\n    *   *Pagination nextLink detected*: `{has_next[:50]}...` (fetching next page...)"
                     
@@ -189,6 +195,20 @@ async def chat_endpoint(request: Request):
 
             # Clean up <think>...</think> tags if reasoning LLM models generated them
             final_response = re.sub(r'<think>[\s\S]*?</think>', '', final_response).strip()
+
+            # Append token usage metadata
+            token_usage = result.get("token_usage") or {"input": 0, "output": 0, "total": 0}
+            input_tokens = token_usage.get("input", 0)
+            output_tokens = token_usage.get("output", 0)
+            total_tokens = token_usage.get("total", 0)
+            
+            token_footer = (
+                f"\n\n---\n"
+                f"*Token Usage:* 🪙 **Input**: {input_tokens:,} | "
+                f"📤 **Output**: {output_tokens:,} | "
+                f"📊 **Total**: {total_tokens:,} tokens"
+            )
+            final_response += token_footer
 
             # Stream the response token by token for a natural feel
             words = final_response.split(" ")

@@ -1,15 +1,17 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Database,
   Network,
-  Info,
   Table,
   Key,
   Search,
   Share2,
   Loader2,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
 } from "lucide-react";
 import { fetchSchemaGraph } from "@/lib/api";
 
@@ -19,7 +21,7 @@ interface Column {
   isKey?: boolean;
 }
 
-interface Node {
+interface RawNode {
   id: string;
   name: string;
   entitySet: string;
@@ -27,56 +29,39 @@ interface Node {
   description: string;
   url: string;
   columns: Column[];
-  x: number;
-  y: number;
-  icon?: string;
 }
 
 interface Edge {
   from: string;
   to: string;
   label: string;
-  isBridge?: boolean;
 }
 
-interface VisualNode {
-  id: string;
-  parentId?: string;
-  name: string;
-  type: "table" | "column";
-  dataType?: string;
-  isKey?: boolean;
+interface LayoutNode extends RawNode {
   x: number;
   y: number;
-  color: string;
+  width: number;
+  height: number;
 }
 
-interface VisualEdge {
-  from: string;
-  to: string;
-  type: "parent-to-column" | "relationship";
-  label?: string;
-}
+const CARD_WIDTH = 220;
+const CARD_HEADER = 36;
+const COL_ROW_HEIGHT = 22;
+const CARD_PADDING_BOTTOM = 8;
+const COL_SPACING = 360;
+const ROW_SPACING = 32;
 
-
-// Fallbacks removed per user request for dynamic data
+const PALETTE = ["#10B981", "#3B82F6", "#F59E0B", "#8B5CF6", "#EF4444", "#EC4899", "#14B8A6", "#F43F5E", "#84CC16"];
 
 export function GraphExplorer() {
-  const [dbData, setDbData] = useState<{ nodes: any[]; edges: any[] }>({ nodes: [], edges: [] });
+  const [dbData, setDbData] = useState<{ nodes: RawNode[]; edges: Edge[] }>({ nodes: [], edges: [] });
   const [loading, setLoading] = useState(true);
   const [selectedNodeId, setSelectedNodeId] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
-
-  const handleNodeClick = (node: VisualNode) => {
-    if (node.type === "table") {
-      setSelectedNodeId(node.id);
-    } else if (node.parentId) {
-      setSelectedNodeId(node.parentId);
-    }
-  };
-
+  const [pan, setPan] = useState({ x: 40, y: 40 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
     async function loadData() {
@@ -84,7 +69,6 @@ export function GraphExplorer() {
       const data = await fetchSchemaGraph();
       if (data && data.nodes && data.nodes.length > 0) {
         setDbData(data);
-        // Default select first node
         setSelectedNodeId(data.nodes[0].id);
       }
       setLoading(false);
@@ -92,337 +76,146 @@ export function GraphExplorer() {
     loadData();
   }, []);
 
-  // ── DYNAMIC HIERARCHICAL PLANET LAYOUT CALCULATOR ──
-  // Layout engine that organizes tables into dynamic horizontal topological columns/layers
-  const layoutNodes = (nodes: any[], edges: any[]): Node[] => {
+  // Module colors
+  const modules = useMemo(() => Array.from(new Set(dbData.nodes.map((n) => n.module || "General"))), [dbData.nodes]);
+  const moduleColorMap = useMemo(() => Object.fromEntries(modules.map((mod, i) => [mod, PALETTE[i % PALETTE.length]])), [modules]);
+  const getColor = (mod: string) => moduleColorMap[mod || "General"] || "#94a3b8";
+
+  // Layout: compute positions using layered DAG
+  const layoutNodes: LayoutNode[] = useMemo(() => {
+    const nodes = dbData.nodes;
+    const edges = dbData.edges;
     if (nodes.length === 0) return [];
-    
-    // 1. Build adjacency list and in-degree map
-    const inDegree: Record<string, number> = {};
+
+    // Build adjacency and in-degree
+    const inDeg: Record<string, number> = {};
     const adj: Record<string, string[]> = {};
-    
-    nodes.forEach((n) => {
-      inDegree[n.id] = 0;
-      adj[n.id] = [];
-    });
-    
+    nodes.forEach((n) => { inDeg[n.id] = 0; adj[n.id] = []; });
     edges.forEach((e) => {
-      if (adj[e.from] && inDegree[e.to] !== undefined) {
+      if (adj[e.from] && inDeg[e.to] !== undefined) {
         adj[e.from].push(e.to);
-        inDegree[e.to]++;
+        inDeg[e.to]++;
       }
     });
-    
-    // 2. Compute layers using BFS
+
+    // BFS layering
     const queue: string[] = [];
     const layers: Record<string, number> = {};
-    
-    nodes.forEach((n) => {
-      if (inDegree[n.id] === 0) {
-        queue.push(n.id);
-        layers[n.id] = 0;
-      }
-    });
-    
-    if (queue.length === 0 && nodes.length > 0) {
-      queue.push(nodes[0].id);
-      layers[nodes[0].id] = 0;
-    }
-    
+    nodes.forEach((n) => { if (inDeg[n.id] === 0) { queue.push(n.id); layers[n.id] = 0; } });
+    if (queue.length === 0 && nodes.length > 0) { queue.push(nodes[0].id); layers[nodes[0].id] = 0; }
+
     let head = 0;
     while (head < queue.length) {
       const u = queue[head++];
-      const currentLayer = layers[u] || 0;
-      
       adj[u].forEach((v) => {
-        const nextLayer = currentLayer + 1;
-        if (layers[v] === undefined || layers[v] < nextLayer) {
-          layers[v] = nextLayer;
-          if (!queue.includes(v)) {
-            queue.push(v);
-          }
+        const next = (layers[u] || 0) + 1;
+        if (layers[v] === undefined || layers[v] < next) {
+          layers[v] = next;
+          if (!queue.includes(v)) queue.push(v);
         }
       });
     }
-    
-    nodes.forEach((n) => {
-      if (layers[n.id] === undefined) {
-        layers[n.id] = 0;
-      }
-    });
-    
-    // 3. Group nodes by layer
-    const layerGroups: Record<number, any[]> = {};
+    nodes.forEach((n) => { if (layers[n.id] === undefined) layers[n.id] = 0; });
+
+    // Group by layer
+    const layerGroups: Record<number, RawNode[]> = {};
     nodes.forEach((n) => {
       const l = layers[n.id];
       if (!layerGroups[l]) layerGroups[l] = [];
       layerGroups[l].push(n);
     });
-    
-    // 4. Position nodes symmetrically
-    const laidOut: Node[] = [];
-    const colSpacing = 320;
-    const rowSpacing = 240;
-    const canvasHeight = 580;
-    const startX = 180;
-    
-    Object.keys(layerGroups).forEach((lStr) => {
+
+    // Position
+    const result: LayoutNode[] = [];
+    Object.keys(layerGroups).sort((a, b) => +a - +b).forEach((lStr) => {
       const l = parseInt(lStr);
       const group = layerGroups[l];
-      const colX = startX + l * colSpacing;
-      
-      const groupHeight = (group.length - 1) * rowSpacing;
-      const colStartY = (canvasHeight - groupHeight) / 2;
-      
-      group.forEach((node, idx) => {
-        const rowY = colStartY + idx * rowSpacing;
-        
-        laidOut.push({
-          id: node.id,
-          name: node.name,
-          entitySet: node.entitySet || "N/A",
-          module: node.module || "General",
-          description: node.description || "No description provided.",
-          url: node.url || "",
-          columns: node.columns || [],
-          x: colX,
-          y: rowY,
+      let currentY = 0;
+
+      group.forEach((node) => {
+        const numCols = (node.columns || []).length;
+        const cardH = CARD_HEADER + numCols * COL_ROW_HEIGHT + CARD_PADDING_BOTTOM;
+        result.push({
+          ...node,
+          x: l * COL_SPACING,
+          y: currentY,
+          width: CARD_WIDTH,
+          height: cardH,
         });
+        currentY += cardH + ROW_SPACING;
       });
     });
-    
-    return laidOut;
-  };
 
-  // Finds matching columns between two nodes to draw column-level connections
-  const getColumnConnection = (fromNode: any, toNode: any) => {
-    // Look for columns with the same name
-    for (const col1 of fromNode.columns || []) {
-      for (const col2 of toNode.columns || []) {
-        if (col1.name.toLowerCase() === col2.name.toLowerCase()) {
-          return { fromCol: col1.name, toCol: col2.name };
-        }
-      }
+    return result;
+  }, [dbData]);
+
+  // SVG canvas size
+  const svgWidth = useMemo(() => {
+    if (layoutNodes.length === 0) return 800;
+    return Math.max(...layoutNodes.map((n) => n.x + n.width)) + 100;
+  }, [layoutNodes]);
+  const svgHeight = useMemo(() => {
+    if (layoutNodes.length === 0) return 600;
+    return Math.max(...layoutNodes.map((n) => n.y + n.height)) + 100;
+  }, [layoutNodes]);
+
+  const selectedNode = dbData.nodes.find((n) => n.id === selectedNodeId) || dbData.nodes[0];
+  const filteredColumns = selectedNode
+    ? (selectedNode.columns || []).filter((c: Column) => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    : [];
+
+  // Pan handlers
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button === 0) { // left click
+      setIsPanning(true);
+      setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
     }
-    // Fallback: if fromNode has a column matching toNode's key
-    const toKey = (toNode.columns || []).find((c: any) => c.isKey)?.name;
-    if (toKey) {
-      const matchingFromCol = (fromNode.columns || []).find((c: any) => 
-        c.name.toLowerCase().includes(toKey.toLowerCase()) || 
-        toKey.toLowerCase().includes(c.name.toLowerCase())
-      );
-      if (matchingFromCol) {
-        return { fromCol: matchingFromCol.name, toCol: toKey };
-      }
+  };
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (isPanning) {
+      setPan({ x: e.clientX - panStart.x, y: e.clientY - panStart.y });
     }
-    return null; // Fallback to table-to-table connection
   };
-
-  const palette = ["#10B981", "#EF4444", "#F59E0B", "#8B5CF6", "#3B82F6", "#EC4899", "#14B8A6", "#F43F5E", "#84CC16"];
-  const modules = Array.from(new Set(dbData.nodes.map((n) => n.module || "General")));
-  const moduleColorMap = Object.fromEntries(
-    modules.map((mod, i) => [mod as string, palette[i % palette.length]])
-  );
-
-  const getModuleColorLocal = (module: string) => {
-    return moduleColorMap[module || "General"] || "rgba(255,255,255,0.4)";
-  };
-
-  const generateVisualGraph = (dbNodes: any[], dbEdges: any[]): { nodes: VisualNode[], edges: VisualEdge[] } => {
-    const visualNodes: VisualNode[] = [];
-    const visualEdges: VisualEdge[] = [];
-    
-    // 1. First, layout the Table Nodes using our Layered layout spacing
-    const tableNodes = layoutNodes(dbNodes, dbEdges);
-    
-    // 2. Add all Table Nodes to visualNodes
-    tableNodes.forEach(table => {
-      const nodeColor = getModuleColorLocal(table.module);
-      visualNodes.push({
-        id: table.id,
-        name: table.name.replace("Northwind ", ""),
-        type: "table",
-        x: table.x,
-        y: table.y,
-        color: nodeColor
-      });
-      
-      // 3. Add all Column Nodes orbiting their parent table
-      const cols = table.columns || [];
-      const numCols = cols.length;
-      const radius = 95;
-      
-      cols.forEach((col, idx) => {
-        // Space them evenly in a circle
-        const angle = (idx / numCols) * 2 * Math.PI;
-        const x = table.x + radius * Math.cos(angle);
-        const y = table.y + radius * Math.sin(angle);
-        const colId = `${table.id}.${col.name}`;
-        
-        visualNodes.push({
-          id: colId,
-          parentId: table.id,
-          name: col.name,
-          type: "column",
-          dataType: col.type,
-          isKey: !!col.isKey,
-          x,
-          y,
-          color: col.isKey ? "#F59E0B" : "rgba(255,255,255,0.7)"
-        });
-        
-        // Add structural link between Table and Column
-        visualEdges.push({
-          from: table.id,
-          to: colId,
-          type: "parent-to-column"
-        });
-      });
-    });
-    
-    // 4. Add relationship edges
-    dbEdges.forEach(edge => {
-      const fromTable = tableNodes.find(n => n.id === edge.from);
-      const toTable = tableNodes.find(n => n.id === edge.to);
-      if (!fromTable || !toTable) return;
-      
-      // Find column-level connection if any
-      const colConn = getColumnConnection(fromTable, toTable);
-      if (colConn) {
-        const fromColId = `${fromTable.id}.${colConn.fromCol}`;
-        const toColId = `${toTable.id}.${colConn.toCol}`;
-        visualEdges.push({
-          from: fromColId,
-          to: toColId,
-          type: "relationship",
-          label: edge.label
-        });
-      } else {
-        // Fallback to table-to-table connection
-        visualEdges.push({
-          from: fromTable.id,
-          to: toTable.id,
-          type: "relationship",
-          label: edge.label
-        });
-      }
-    });
-    
-    return { nodes: visualNodes, edges: visualEdges };
-  };
-
-  const getBezierPath = (startX: number, startY: number, endX: number, endY: number) => {
-    const dx = Math.abs(endX - startX);
-    const controlOffset = Math.min(120, dx / 2 + 10);
-    
-    // Smooth horizontal flowing curve
-    const cp1x = startX + (endX > startX ? controlOffset : -controlOffset);
-    const cp1y = startY;
-    const cp2x = endX + (endX > startX ? -controlOffset : controlOffset);
-    const cp2y = endY;
-    
-    return `M ${startX} ${startY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endX} ${endY}`;
+  const handleMouseUp = () => setIsPanning(false);
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    setZoom((prev) => Math.min(2.5, Math.max(0.3, prev - e.deltaY * 0.001)));
   };
 
   if (loading) {
     return (
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "var(--bg-chat)" }}>
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", height: "100%", background: "var(--bg-chat)" }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
           <Loader2 size={32} style={{ animation: "spin 1.2s linear infinite", color: "var(--text-accent)" }} />
-          <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-secondary)" }}>Querying SurrealDB Schema Graph...</span>
+          <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-secondary)" }}>Loading Schema Graph...</span>
         </div>
       </div>
     );
   }
 
-  const { nodes: visualNodes, edges: visualEdges } = generateVisualGraph(dbData.nodes, dbData.edges);
-
-  const selectedNode = dbData.nodes.find((n) => n.id === selectedNodeId) || dbData.nodes[0];
-  const filteredColumns = selectedNode ? selectedNode.columns.filter((c: any) =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase())
-  ) : [];
-
-  // Identify connected edges and nodes to highlight neighborhood
-  const getNeighborhood = (nodeId: string | null) => {
-    if (!nodeId) return { edges: [], nodes: [] };
-    
-    // Find all edges directly connected to this node
-    let connectedEdges = visualEdges.filter(
-      (e) => e.from === nodeId || e.to === nodeId
-    );
-    
-    // If it's a table node, also include all relationships connected to its column moons!
-    if (!nodeId.includes(".")) {
-      const colEdges = visualEdges.filter(e => 
-        e.type === "relationship" && 
-        (e.from.startsWith(nodeId + ".") || e.to.startsWith(nodeId + "."))
-      );
-      connectedEdges = [...connectedEdges, ...colEdges];
-    }
-    
-    const connectedNodes = connectedEdges.flatMap((e) => [e.from, e.to]);
-    return { edges: connectedEdges, nodes: Array.from(new Set(connectedNodes)) };
-  };
-
-  const activeNodeId = hoveredNodeId || selectedNodeId;
-  const neighborhood = getNeighborhood(activeNodeId);
-
   return (
-    <div
-      style={{
-        flex: 1,
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", height: "100%", background: "var(--bg-chat)", overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{
+        padding: "12px 24px",
+        borderBottom: "1px solid var(--border-secondary)",
+        background: "var(--bg-glass)",
+        backdropFilter: "blur(12px)",
         display: "flex",
-        flexDirection: "column",
-        height: "100vh",
-        background: "var(--bg-chat)",
-        transition: "background var(--transition-base)",
-        position: "relative",
-        overflow: "hidden",
-      }}
-    >
-      {/* Top Header */}
-      <div
-        style={{
-          padding: "16px 24px",
-          borderBottom: "1px solid var(--border-secondary)",
-          background: "var(--bg-glass)",
-          backdropFilter: "blur(12px)",
-          WebkitBackdropFilter: "blur(12px)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          zIndex: 10,
-        }}
-      >
+        alignItems: "center",
+        justifyContent: "space-between",
+        zIndex: 10,
+        flexShrink: 0,
+      }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Network size={20} style={{ color: "var(--text-accent)" }} />
-          <span
-            className="font-display"
-            style={{
-              fontSize: "15px",
-              fontWeight: 650,
-              color: "var(--text-primary)",
-            }}
-          >
-            SurrealDB Dynamic Schema & Relationship Graph
+          <Network size={18} style={{ color: "var(--text-accent)" }} />
+          <span className="font-display" style={{ fontSize: "15px", fontWeight: 650, color: "var(--text-primary)" }}>
+            Entity Relationship Graph
           </span>
         </div>
-
         {/* Legend */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            fontSize: "11px",
-            fontWeight: 600,
-            background: "rgba(255,255,255,0.01)",
-            padding: "4px 12px",
-            borderRadius: "var(--radius-full)",
-            border: "1px solid var(--border-secondary)",
-          }}
-        >
-          {(modules as string[]).map(mod => (
+        <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: "11px", fontWeight: 600 }}>
+          {modules.map((mod) => (
             <div key={mod} style={{ display: "flex", alignItems: "center", gap: 5 }}>
               <div style={{ width: 8, height: 8, borderRadius: "50%", background: moduleColorMap[mod] }} />
               <span style={{ color: "var(--text-secondary)" }}>{mod}</span>
@@ -431,136 +224,100 @@ export function GraphExplorer() {
         </div>
       </div>
 
-      {/* Main Splits */}
+      {/* Main */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        
-        {/* Left Canvas - Dynamic Clustered SVG Map */}
+        {/* Canvas */}
         <div
           style={{
             flex: 1,
             position: "relative",
-            background: "radial-gradient(circle, var(--bg-chat) 30%, rgba(0,0,0,0.2) 100%)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-start",
-            overflow: "auto",
-            padding: 40,
+            overflow: "hidden",
+            background: "radial-gradient(ellipse at center, var(--bg-primary) 0%, var(--bg-chat) 70%)",
+            cursor: isPanning ? "grabbing" : "grab",
           }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onWheel={handleWheel}
         >
-          {visualNodes.length === 0 ? (
-            <div style={{ color: "var(--text-tertiary)", fontSize: "14px" }}>No active graph metadata found in SurrealDB.</div>
+          {layoutNodes.length === 0 ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-tertiary)", fontSize: 14 }}>
+              No entities found in SurrealDB. Register some entities first.
+            </div>
           ) : (
             <svg
-              width={1000 * zoom}
-              height={580 * zoom}
-              style={{
-                overflow: "visible",
-                flexShrink: 0,
-                transition: "width 0.2s ease-out, height 0.2s ease-out",
-              }}
+              width="100%"
+              height="100%"
+              style={{ overflow: "visible" }}
             >
-              <g 
-                transform={`scale(${zoom})`} 
-                style={{ 
-                  transformOrigin: "top left", 
-                  transition: "transform 0.2s ease-out" 
-                }}
-              >
-                {/* Arrow Marker Definitions */}
-                <defs>
-                  <marker
-                    id="arrow-std"
-                    viewBox="0 0 10 10"
-                    refX="6"
-                    refY="5"
-                    markerWidth="5"
-                    markerHeight="5"
-                    orient="auto-start-reverse"
-                  >
-                    <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(255,255,255,0.25)" />
-                  </marker>
-                  <marker
-                    id="arrow-hl"
-                    viewBox="0 0 10 10"
-                    refX="6"
-                    refY="5"
-                    markerWidth="6"
-                    markerHeight="6"
-                    orient="auto-start-reverse"
-                  >
-                    <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-accent)" />
-                  </marker>
-                </defs>
+              <defs>
+                <marker id="graph-arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+                  <path d="M 0 1 L 10 5 L 0 9 z" fill="var(--text-accent)" opacity="0.6" />
+                </marker>
+              </defs>
+              <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+                {/* Edges */}
+                {dbData.edges.map((edge, idx) => {
+                  const from = layoutNodes.find((n) => n.id === edge.from);
+                  const to = layoutNodes.find((n) => n.id === edge.to);
+                  if (!from || !to) return null;
 
-                {/* Render Network Edges */}
-                {visualEdges.map((edge, idx) => {
-                  const fromNode = visualNodes.find((n) => n.id === edge.from);
-                  const toNode = visualNodes.find((n) => n.id === edge.to);
-                  if (!fromNode || !toNode) return null;
+                  const isSelected = selectedNodeId === edge.from || selectedNodeId === edge.to;
+                  const fromX = from.x + from.width;
+                  const fromY = from.y + from.height / 2;
+                  const toX = to.x;
+                  const toY = to.y + to.height / 2;
 
-                  const isHighlighted =
-                    neighborhood.edges.some((e) => e.from === edge.from && e.to === edge.to) ||
-                    (selectedNodeId === edge.from || selectedNodeId === edge.to || 
-                     (fromNode.parentId === selectedNodeId && edge.type === "parent-to-column") ||
-                     (toNode.parentId === selectedNodeId && edge.type === "parent-to-column"));
+                  // If target is to the left, reverse port sides
+                  const sx = toX > fromX ? fromX : from.x;
+                  const sy = fromY;
+                  const ex = toX > fromX ? toX : to.x + to.width;
+                  const ey = toY;
 
-                  const isParentLink = edge.type === "parent-to-column";
+                  const dx = Math.abs(ex - sx);
+                  const cpOff = Math.max(60, dx * 0.4);
 
-                  let edgeColor = "rgba(255,255,255,0.06)";
-                  if (isHighlighted) {
-                    edgeColor = isParentLink ? "rgba(255,255,255,0.18)" : "var(--text-accent)";
-                  } else if (isParentLink) {
-                    edgeColor = "rgba(255,255,255,0.04)";
-                  }
-
-                  const pathData = getBezierPath(fromNode.x, fromNode.y, toNode.x, toNode.y);
+                  const path = `M ${sx} ${sy} C ${sx + (ex > sx ? cpOff : -cpOff)} ${sy}, ${ex + (ex > sx ? -cpOff : cpOff)} ${ey}, ${ex} ${ey}`;
 
                   return (
-                    <g key={`edge-${idx}`}>
-                      {/* Glowing wide edge line */}
-                      {!isParentLink && (
-                        <path
-                          d={pathData}
-                          fill="none"
-                          stroke="var(--text-accent)"
-                          strokeWidth={isHighlighted ? 3 : 0}
-                          opacity="0.14"
-                          style={{ transition: "all var(--transition-fast)" }}
-                        />
+                    <g key={`e-${idx}`}>
+                      {/* Glow */}
+                      {isSelected && (
+                        <path d={path} fill="none" stroke="var(--text-accent)" strokeWidth={4} opacity={0.1} />
                       )}
-                      {/* Core connector line */}
                       <path
-                        d={pathData}
+                        d={path}
                         fill="none"
-                        stroke={edgeColor}
-                        strokeWidth={isHighlighted ? 1.5 : isParentLink ? 1 : 1.2}
-                        markerEnd={isParentLink ? "none" : isHighlighted ? "url(#arrow-hl)" : "url(#arrow-std)"}
-                        strokeDasharray={isParentLink ? "3,3" : "none"}
-                        style={{ transition: "all var(--transition-fast)" }}
+                        stroke={isSelected ? "var(--text-accent)" : "var(--text-tertiary)"}
+                        strokeWidth={isSelected ? 2 : 1.2}
+                        opacity={isSelected ? 0.8 : 0.25}
+                        markerEnd="url(#graph-arrow)"
+                        style={{ transition: "all 0.2s ease" }}
                       />
-                      
-                      {/* Floating relation label */}
-                      {!isParentLink && isHighlighted && edge.label && (
+                      {/* Label */}
+                      {isSelected && edge.label && (
                         <g>
                           <rect
-                            x={(fromNode.x + toNode.x) / 2 - 38}
-                            y={(fromNode.y + toNode.y) / 2 - 8}
-                            width="76"
-                            height="14"
+                            x={(sx + ex) / 2 - 50}
+                            y={(sy + ey) / 2 - 10}
+                            width="100"
+                            height="18"
                             rx="4"
-                            fill="var(--bg-chat)"
+                            fill="var(--bg-secondary)"
                             stroke="var(--border-accent)"
-                            strokeWidth="0.8"
+                            strokeWidth="1"
+                            opacity="0.95"
                           />
                           <text
-                            x={(fromNode.x + toNode.x) / 2}
-                            y={(fromNode.y + toNode.y) / 2 + 2}
+                            x={(sx + ex) / 2}
+                            y={(sy + ey) / 2 + 3}
                             textAnchor="middle"
                             fill="var(--text-accent)"
-                            fontSize="7px"
-                            fontWeight="650"
+                            fontSize="10px"
+                            fontWeight="600"
                           >
-                            {edge.label}
+                            {edge.label.length > 18 ? edge.label.slice(0, 18) + "…" : edge.label}
                           </text>
                         </g>
                       )}
@@ -568,125 +325,105 @@ export function GraphExplorer() {
                   );
                 })}
 
-                {/* Render Network Nodes (Table Planets and Column Moons) */}
-                {visualNodes.map((node) => {
-                  const isTable = node.type === "table";
-                  const isSelected = selectedNodeId === node.id || (node.parentId === selectedNodeId);
-                  const isHovered = hoveredNodeId === node.id || (node.parentId === hoveredNodeId);
-                  const isNeighbor = neighborhood.nodes.includes(node.id);
-                  
-                  const isDirectActive = selectedNodeId === node.id || hoveredNodeId === node.id;
-                  
-                  const radius = isTable 
-                    ? (isDirectActive ? 22 : 18) 
-                    : (isDirectActive ? 8 : node.isKey ? 6 : 5.5);
-
-                  const nodeColor = node.color;
-
-                  // For column text labels, calculate offsets relative to parent table center
-                  let textAnchor: "start" | "middle" | "end" = "start";
-                  let dx = 10;
-                  let dy = 3.5;
-                  if (!isTable && node.parentId) {
-                    const parentNode = visualNodes.find((n) => n.id === node.parentId);
-                    const parentX = parentNode ? parentNode.x : node.x;
-                    const parentY = parentNode ? parentNode.y : node.y;
-
-                    if (node.x > parentX + 5) {
-                      textAnchor = "start";
-                      dx = 10;
-                    } else if (node.x < parentX - 5) {
-                      textAnchor = "end";
-                      dx = -10;
-                    } else {
-                      textAnchor = "middle";
-                      dx = 0;
-                      dy = node.y > parentY ? 14 : -10;
-                    }
-                  }
+                {/* Node Cards */}
+                {layoutNodes.map((node) => {
+                  const isSelected = selectedNodeId === node.id;
+                  const color = getColor(node.module);
+                  const cols = node.columns || [];
 
                   return (
                     <g
                       key={node.id}
                       transform={`translate(${node.x}, ${node.y})`}
-                      onClick={() => handleNodeClick(node)}
-                      onMouseEnter={() => setHoveredNodeId(node.id)}
-                      onMouseLeave={() => setHoveredNodeId(null)}
+                      onClick={() => setSelectedNodeId(node.id)}
                       style={{ cursor: "pointer" }}
                     >
-                      {/* Glowing ring under tables / active nodes */}
-                      {(isTable || isDirectActive) && (
-                        <circle
-                          r={radius + (isTable ? 6 : 3)}
-                          fill="none"
-                          stroke={nodeColor}
-                          strokeWidth={isDirectActive ? 2.5 : 1}
-                          opacity={isDirectActive ? 0.35 : 0.15}
-                          style={{ transition: "all var(--transition-fast)" }}
-                        />
-                      )}
-
-                      {/* Core node dot */}
-                      <circle
-                        r={radius}
-                        fill={isTable ? "rgba(15, 23, 42, 0.95)" : nodeColor}
-                        stroke={isTable ? nodeColor : "var(--bg-chat)"}
-                        strokeWidth={isTable ? 2.5 : 1.5}
-                        style={{
-                          transition: "all var(--transition-fast)",
-                          filter: isDirectActive ? `drop-shadow(0 0 6px ${nodeColor})` : "none",
-                        }}
+                      {/* Card shadow */}
+                      <rect
+                        x={2} y={2}
+                        width={node.width} height={node.height}
+                        rx={10}
+                        fill="rgba(0,0,0,0.15)"
                       />
+                      {/* Card body */}
+                      <rect
+                        width={node.width} height={node.height}
+                        rx={10}
+                        fill="var(--bg-secondary)"
+                        stroke={isSelected ? color : "var(--border-primary)"}
+                        strokeWidth={isSelected ? 2 : 1}
+                        style={{ transition: "all 0.2s ease" }}
+                      />
+                      {/* Colored header bar */}
+                      <rect
+                        width={node.width} height={CARD_HEADER}
+                        rx={10}
+                        fill={color}
+                        opacity={isSelected ? 0.2 : 0.1}
+                      />
+                      {/* Bottom corners mask for header */}
+                      <rect
+                        y={CARD_HEADER - 10}
+                        width={node.width} height={10}
+                        fill={color}
+                        opacity={isSelected ? 0.2 : 0.1}
+                      />
+                      {/* Table icon + name */}
+                      <g transform={`translate(12, ${CARD_HEADER / 2})`}>
+                        <circle r={4} fill={color} />
+                      </g>
+                      <text
+                        x={24}
+                        y={CARD_HEADER / 2 + 4}
+                        fill="var(--text-primary)"
+                        fontSize="12px"
+                        fontWeight="700"
+                        fontFamily="'Outfit', sans-serif"
+                      >
+                        {node.name.length > 22 ? node.name.slice(0, 22) + "…" : node.name}
+                      </text>
 
-                      {/* Table Name Label directly in the graph canvas */}
-                      {isTable && (
-                        <g transform="translate(0, -28)">
-                          <rect
-                            x="-60"
-                            y="-11"
-                            width="120"
-                            height="18"
-                            rx="4"
-                            fill="var(--bg-glass-heavy, rgba(15, 23, 42, 0.9))"
-                            stroke={isDirectActive ? "var(--border-accent)" : "rgba(255,255,255,0.08)"}
-                            strokeWidth="1"
-                          />
-                          <text
-                            textAnchor="middle"
-                            y="1"
-                            fill="#ffffff"
-                            fontSize="9.5px"
-                            fontWeight="750"
-                            className="font-display"
-                          >
-                            {node.name}
-                          </text>
-                        </g>
-                      )}
+                      {/* Separator */}
+                      <line x1={0} y1={CARD_HEADER} x2={node.width} y2={CARD_HEADER} stroke="var(--border-primary)" strokeWidth={1} />
 
-                      {/* Column Field Name & Data Type label in Graph */}
-                      {!isTable && (
-                        <text
-                          dx={dx}
-                          dy={dy}
-                          textAnchor={textAnchor}
-                          fill={isDirectActive ? "#ffffff" : isNeighbor ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.4)"}
-                          fontSize={isDirectActive ? "9.5px" : "8.5px"}
-                          fontWeight={isDirectActive ? "700" : "500"}
-                          style={{
-                            transition: "all var(--transition-fast)",
-                            userSelect: "none",
-                            pointerEvents: "none",
-                          }}
-                        >
-                          {node.name}
-                          {isDirectActive && (
-                            <tspan fill="rgba(255,255,255,0.4)" fontSize="8px" fontWeight="400">
-                              {" "}({node.dataType})
-                            </tspan>
-                          )}
-                        </text>
-                      )}
+                      {/* Columns */}
+                      {cols.map((col, ci) => {
+                        const cy = CARD_HEADER + ci * COL_ROW_HEIGHT + COL_ROW_HEIGHT / 2 + 2;
+                        return (
+                          <g key={col.name} transform={`translate(0, ${cy})`}>
+                            {/* Key icon or dot */}
+                            {col.isKey ? (
+                              <g transform="translate(12, -4)">
+                                <rect x={-3} y={-3} width={8} height={8} rx={2} fill="#F59E0B" opacity={0.2} />
+                                <rect x={-1} y={-1} width={4} height={4} rx={1} fill="#F59E0B" />
+                              </g>
+                            ) : (
+                              <circle cx={12} cy={-1} r={2} fill="var(--text-tertiary)" opacity={0.4} />
+                            )}
+                            {/* Column name */}
+                            <text
+                              x={24}
+                              y={2}
+                              fill={col.isKey ? "var(--text-primary)" : "var(--text-secondary)"}
+                              fontSize="11px"
+                              fontWeight={col.isKey ? "600" : "400"}
+                            >
+                              {col.name.length > 18 ? col.name.slice(0, 18) + "…" : col.name}
+                            </text>
+                            {/* Type badge */}
+                            <text
+                              x={node.width - 10}
+                              y={2}
+                              textAnchor="end"
+                              fill="var(--text-tertiary)"
+                              fontSize="9px"
+                              fontFamily="monospace"
+                            >
+                              {col.type}
+                            </text>
+                          </g>
+                        );
+                      })}
                     </g>
                   );
                 })}
@@ -694,296 +431,117 @@ export function GraphExplorer() {
             </svg>
           )}
 
-          {/* Floating Zoom Widget */}
-          {visualNodes.length > 0 && (
-            <div
-              style={{
-                position: "absolute",
-                bottom: 20,
-                right: 20,
-                display: "flex",
-                flexDirection: "column",
-                gap: 6,
-                background: "var(--bg-glass-heavy, rgba(15, 23, 42, 0.85))",
-                border: "1px solid var(--border-secondary, rgba(255, 255, 255, 0.08))",
-                borderRadius: "8px",
-                padding: "4px",
-                boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-                zIndex: 10,
-              }}
-            >
-              <button
-                onClick={() => setZoom(prev => Math.min(2, prev + 0.15))}
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: "6px",
-                  background: "rgba(255,255,255,0.03)",
-                  border: "none",
-                  color: "#ffffff",
-                  fontSize: "16px",
-                  fontWeight: "bold",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  transition: "background var(--transition-fast)",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.08)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.03)")}
-                title="Zoom In"
-              >
-                +
+          {/* Zoom controls */}
+          {layoutNodes.length > 0 && (
+            <div style={{
+              position: "absolute", bottom: 16, right: 16,
+              display: "flex", flexDirection: "column", gap: 4,
+              background: "var(--bg-glass-heavy)", border: "1px solid var(--border-primary)",
+              borderRadius: 8, padding: 4, boxShadow: "var(--shadow-md)", zIndex: 10,
+            }}>
+              <button onClick={() => setZoom((p) => Math.min(2.5, p + 0.2))} className="graph-zoom-btn" title="Zoom In">
+                <ZoomIn size={16} />
               </button>
-              <button
-                onClick={() => setZoom(1)}
-                style={{
-                  width: 32,
-                  height: 20,
-                  borderRadius: "4px",
-                  background: "transparent",
-                  border: "none",
-                  color: "var(--text-tertiary)",
-                  fontSize: "9px",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-                title="Reset Zoom"
-              >
+              <button onClick={() => { setZoom(1); setPan({ x: 40, y: 40 }); }} className="graph-zoom-btn" title="Reset">
+                <Maximize2 size={14} />
+              </button>
+              <button onClick={() => setZoom((p) => Math.max(0.3, p - 0.2))} className="graph-zoom-btn" title="Zoom Out">
+                <ZoomOut size={16} />
+              </button>
+              <div style={{ textAlign: "center", fontSize: 9, color: "var(--text-tertiary)", fontWeight: 600, padding: "2px 0" }}>
                 {Math.round(zoom * 100)}%
-              </button>
-              <button
-                onClick={() => setZoom(prev => Math.max(0.5, prev - 0.15))}
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: "6px",
-                  background: "rgba(255,255,255,0.03)",
-                  border: "none",
-                  color: "#ffffff",
-                  fontSize: "16px",
-                  fontWeight: "bold",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  transition: "background var(--transition-fast)",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.08)")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(255,255,255,0.03)")}
-                title="Zoom Out"
-              >
-                −
-              </button>
+              </div>
             </div>
           )}
-
-          {/* Quick Info Box */}
-          <div
-            style={{
-              position: "absolute",
-              bottom: 16,
-              left: 20,
-              borderRadius: "var(--radius-md)",
-              padding: "10px 14px",
-              background: "var(--bg-glass-subtle, rgba(255, 255, 255, 0.02))",
-              border: "1px solid var(--border-secondary)",
-              maxWidth: 260,
-              fontSize: "11px",
-              color: "var(--text-tertiary)",
-              lineHeight: 1.4,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
-              <Share2 size={12} style={{ color: "var(--text-accent)" }} />
-              <span>SurrealDB Dynamic Schema Map</span>
-            </div>
-            Direct, real-time database schema graph visualization. Every table and expands/belongs_to link is retrieved dynamically from the active SurrealDB instance.
-          </div>
         </div>
 
-        {/* Right Side Panel - Columns, metadata, and detail keys */}
+        {/* Right Side Panel */}
         {selectedNode && (
-          <div
-            style={{
-              width: 380,
-              borderLeft: "1px solid var(--border-secondary)",
-              background: "var(--bg-sidebar, rgba(0, 0, 0, 0.05))",
-              display: "flex",
-              flexDirection: "column",
-              overflow: "hidden",
-            }}
-          >
-            {/* Summary Drawer */}
-            <div style={{ padding: "20px 24px", borderBottom: "1px solid var(--border-secondary)" }}>
-              <span
-                style={{
-                  fontSize: "10px",
-                  fontWeight: 650,
-                  color: getModuleColorLocal(selectedNode.module),
-                  background: `${getModuleColorLocal(selectedNode.module)}12`,
-                  border: `1px solid ${getModuleColorLocal(selectedNode.module)}30`,
-                  padding: "2px 8px",
-                  borderRadius: "var(--radius-full)",
-                  display: "inline-block",
-                  marginBottom: 8,
-                }}
-              >
-                {selectedNode.module} Domain
+          <div style={{
+            width: 340, borderLeft: "1px solid var(--border-secondary)",
+            background: "var(--bg-sidebar)", display: "flex", flexDirection: "column", overflow: "hidden", flexShrink: 0,
+          }}>
+            {/* Summary */}
+            <div style={{ padding: "20px 20px 16px", borderBottom: "1px solid var(--border-secondary)" }}>
+              <span style={{
+                fontSize: 10, fontWeight: 700, color: getColor(selectedNode.module),
+                background: `${getColor(selectedNode.module)}15`, border: `1px solid ${getColor(selectedNode.module)}30`,
+                padding: "2px 8px", borderRadius: "var(--radius-full)", display: "inline-block", marginBottom: 8,
+              }}>
+                {selectedNode.module}
               </span>
-              <h2
-                className="font-display"
-                style={{
-                  fontSize: "18px",
-                  fontWeight: 700,
-                  color: "var(--text-primary)",
-                  margin: "0 0 6px 0",
-                }}
-              >
+              <h2 className="font-display" style={{ fontSize: 17, fontWeight: 700, color: "var(--text-primary)", margin: "0 0 6px" }}>
                 {selectedNode.name}
               </h2>
-              <p
-                style={{
-                  fontSize: "12px",
-                  color: "var(--text-secondary)",
-                  margin: "0 0 12px 0",
-                  lineHeight: 1.4,
-                }}
-              >
+              <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: "0 0 10px", lineHeight: 1.5 }}>
                 {selectedNode.description}
               </p>
-
-              <div
-                style={{
-                  fontSize: "11px",
-                  color: "var(--text-tertiary)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 4,
-                }}
-              >
-                <div>
-                  <strong>Entity Set Name:</strong> <code>{selectedNode.entitySet}</code>
-                </div>
-                <div>
-                  <strong>Relative OData URI:</strong> <code>{selectedNode.url}</code>
-                </div>
+              <div style={{ fontSize: 11, color: "var(--text-tertiary)", display: "flex", flexDirection: "column", gap: 3 }}>
+                <div><strong>Entity Set:</strong> <code style={{ background: "var(--bg-tertiary)", padding: "1px 5px", borderRadius: 4, fontSize: 10 }}>{selectedNode.entitySet}</code></div>
+                <div><strong>OData URI:</strong> <code style={{ background: "var(--bg-tertiary)", padding: "1px 5px", borderRadius: 4, fontSize: 10 }}>{selectedNode.url}</code></div>
               </div>
             </div>
 
-            {/* Column search filter */}
-            <div
-              style={{
-                padding: "10px 16px",
-                background: "rgba(255, 255, 255, 0.01)",
-                borderBottom: "1px solid var(--border-secondary)",
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
-            >
+            {/* Search */}
+            <div style={{
+              padding: "8px 16px", borderBottom: "1px solid var(--border-secondary)",
+              display: "flex", alignItems: "center", gap: 8,
+            }}>
               <Search size={14} style={{ color: "var(--text-tertiary)" }} />
               <input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Filter columns..."
                 style={{
-                  border: "none",
-                  background: "transparent",
-                  color: "var(--text-primary)",
-                  fontSize: "12.5px",
-                  outline: "none",
-                  width: "100%",
-                  fontFamily: "inherit",
-              }}
-            />
-          </div>
-
-          {/* Columns & Field list */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                fontSize: "11px",
-                fontWeight: 600,
-                color: "var(--text-tertiary)",
-                marginBottom: 10,
-                padding: "0 6px",
-              }}
-            >
-              <Table size={12} />
-              <span>Columns & Data Types ({filteredColumns.length})</span>
+                  border: "none", background: "transparent", color: "var(--text-primary)",
+                  fontSize: 12.5, outline: "none", width: "100%", fontFamily: "inherit",
+                }}
+              />
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {filteredColumns.map((col: any) => (
-                <div
-                  key={col.name}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "8px 12px",
-                    borderRadius: "var(--radius-sm)",
-                    background: col.isKey ? "rgba(59, 130, 246, 0.03)" : "rgba(255, 255, 255, 0.01)",
-                    border: col.isKey
-                      ? "1px solid rgba(59, 130, 246, 0.15)"
-                      : "1px solid var(--border-secondary)",
-                    transition: "all var(--transition-fast)",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                    {col.isKey ? (
-                      <Key size={13} style={{ color: "var(--text-accent)", flexShrink: 0 }} />
-                    ) : (
-                      <div
-                        style={{
-                          width: 4,
-                          height: 4,
-                          borderRadius: "50%",
-                          background: "var(--text-tertiary)",
-                          opacity: 0.5,
-                          flexShrink: 0,
-                        }}
-                      />
-                    )}
-                    <span
-                      style={{
-                        fontSize: "13px",
-                        fontWeight: col.isKey ? 600 : 500,
-                        color: col.isKey ? "var(--text-primary)" : "var(--text-secondary)",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {col.name}
-                    </span>
-                  </div>
-                  <span
+            {/* Columns list */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "10px 14px" }}>
+              <div style={{
+                display: "flex", alignItems: "center", gap: 6, fontSize: 11,
+                fontWeight: 600, color: "var(--text-tertiary)", marginBottom: 8, padding: "0 4px",
+              }}>
+                <Table size={12} />
+                <span>Columns ({filteredColumns.length})</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {filteredColumns.map((col: Column) => (
+                  <div
+                    key={col.name}
                     style={{
-                      fontSize: "10.5px",
-                      color: col.isKey ? "var(--text-accent)" : "var(--text-tertiary)",
-                      background: col.isKey ? "rgba(59, 130, 246, 0.08)" : "var(--bg-tertiary)",
-                      padding: "2px 6px",
-                      borderRadius: "4px",
-                      fontFamily: "monospace",
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      padding: "7px 10px", borderRadius: "var(--radius-sm)",
+                      background: col.isKey ? "rgba(59, 130, 246, 0.04)" : "transparent",
+                      border: col.isKey ? "1px solid rgba(59, 130, 246, 0.12)" : "1px solid var(--border-secondary)",
                     }}
                   >
-                    {col.type}
-                  </span>
-                </div>
-              ))}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {col.isKey ? (
+                        <Key size={12} style={{ color: "var(--text-accent)", flexShrink: 0 }} />
+                      ) : (
+                        <div style={{ width: 4, height: 4, borderRadius: "50%", background: "var(--text-tertiary)", opacity: 0.4, flexShrink: 0 }} />
+                      )}
+                      <span style={{ fontSize: 12.5, fontWeight: col.isKey ? 600 : 450, color: col.isKey ? "var(--text-primary)" : "var(--text-secondary)" }}>
+                        {col.name}
+                      </span>
+                    </div>
+                    <span style={{
+                      fontSize: 10, color: col.isKey ? "var(--text-accent)" : "var(--text-tertiary)",
+                      background: col.isKey ? "rgba(59, 130, 246, 0.08)" : "var(--bg-tertiary)",
+                      padding: "2px 6px", borderRadius: 4, fontFamily: "monospace",
+                    }}>
+                      {col.type}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
         )}
-
       </div>
     </div>
   );

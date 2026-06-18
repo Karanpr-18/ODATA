@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from app.services.llm_factory import get_llm
+from app.services.llm_factory import get_llm, extract_token_usage
 
 from app.config import get_settings
 from app.graph.state import AgentState
@@ -88,18 +88,11 @@ async def instruct_query(state: AgentState) -> dict[str, Any]:
     # Format candidates for prompt
     candidates_data = []
     for c in candidates:
-        schema = {}
-        try:
-            schema = json.loads(c.get("metadata_schema", "{}"))
-        except:
-            pass
         candidates_data.append({
             "id": c.get("id"),
             "name": c.get("name"),
             "entity_set": c.get("entity_set"),
             "description": c.get("description"),
-            "properties": list(schema.get("properties", {}).keys()),
-            "nav_properties": c.get("nav_properties", []),
             "key_fields": c.get("key_fields", [])
         })
 
@@ -125,6 +118,13 @@ async def instruct_query(state: AgentState) -> dict[str, Any]:
         ]
 
         response = await llm.ainvoke(prompt_messages)
+        usage = extract_token_usage(response)
+        current_token_usage = state.get("token_usage") or {"input": 0, "output": 0, "total": 0}
+        new_token_usage = {
+            "input": current_token_usage.get("input", 0) + usage["input"],
+            "output": current_token_usage.get("output", 0) + usage["output"],
+            "total": current_token_usage.get("total", 0) + usage["total"]
+        }
         content = response.content.strip()
 
         # Strip reasoning thoughts if present
@@ -184,7 +184,8 @@ async def instruct_query(state: AgentState) -> dict[str, Any]:
             "matched_entity": selected_entity,
             "schema_context": selected_entity.get("metadata_schema", ""),
             "graph_context": graph_context,
-            "instruction_plan": plan
+            "instruction_plan": plan,
+            "token_usage": new_token_usage
         }
 
     except Exception as e:

@@ -17,6 +17,8 @@ import {
   Eye,
   EyeOff,
   ChevronDown,
+  Merge,
+  ExternalLink,
 } from "lucide-react";
 import {
   fetchSettings,
@@ -25,6 +27,9 @@ import {
   LLMConfig,
   ServiceConfig,
   JoinConfig,
+  JoinedServiceConfig,
+  MCPConfig,
+  deleteODataMCPEntities,
 } from "@/lib/api";
 import { GraphExplorer } from "@/components/graph-explorer";
 
@@ -46,9 +51,11 @@ const PROVIDERS: Record<string, string[]> = {
 
 interface SettingsViewProps {
   onBack: () => void;
+  onNavigateToDiscovery: (params: { service?: ServiceConfig; mcp?: MCPConfig }) => void;
+  onNavigateToJoin: () => void;
 }
 
-export function SettingsView({ onBack }: SettingsViewProps) {
+export function SettingsView({ onBack, onNavigateToDiscovery, onNavigateToJoin }: SettingsViewProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("models");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -64,7 +71,8 @@ export function SettingsView({ onBack }: SettingsViewProps) {
   const [showApiKey, setShowApiKey] = useState(false);
 
   // Services State
-  const [services, setServices] = useState<ServiceConfig[]>([]);
+  const [services, setServices] = useState<(ServiceConfig | JoinedServiceConfig)[]>([]);
+  const [mcps, setMcps] = useState<MCPConfig[]>([]);
   const [joins, setJoins] = useState<JoinConfig[]>([]);
 
   // New service form
@@ -72,15 +80,6 @@ export function SettingsView({ onBack }: SettingsViewProps) {
     name: "",
     url: "",
     description: "",
-  });
-
-  // New join form
-  const [newJoin, setNewJoin] = useState<JoinConfig>({
-    source_service: "",
-    target_service: "",
-    source_table: "",
-    target_table: "",
-    join_key: "",
   });
 
   useEffect(() => {
@@ -92,6 +91,7 @@ export function SettingsView({ onBack }: SettingsViewProps) {
     const data = await fetchSettings();
     setLlm(data.llm || { provider: "", active_model: "", fallback_model: "", api_keys: {} });
     setServices(data.services || []);
+    setMcps(data.mcps || []);
     setJoins(data.joins || []);
     setLoading(false);
   };
@@ -99,30 +99,55 @@ export function SettingsView({ onBack }: SettingsViewProps) {
   const handleSave = async () => {
     setSaving(true);
     setSaveStatus("idle");
-    const success = await saveSettings({ llm, services, joins });
+    const success = await saveSettings({ llm, services, mcps, joins });
     setSaving(false);
     setSaveStatus(success ? "success" : "error");
     setTimeout(() => setSaveStatus("idle"), 3000);
   };
 
-  const addService = () => {
+  const addService = async () => {
     if (!newService.name || !newService.url) return;
-    setServices((prev) => [...prev, { ...newService }]);
+    const updatedServices = [...services, { ...newService }];
+    setServices(updatedServices);
     setNewService({ name: "", url: "", description: "" });
+    await saveSettings({ llm, services: updatedServices, mcps, joins });
   };
 
-  const removeService = (index: number) => {
-    setServices((prev) => prev.filter((_, i) => i !== index));
+  const removeService = async (index: number) => {
+    const removedService = services[index];
+    const updatedServices = services.filter((_, i) => i !== index);
+    setServices(updatedServices);
+    
+    // Clean up any joins involving this service name
+    const updatedJoins = joins.filter(
+      (j) =>
+        j.source_service !== removedService.name &&
+        j.target_service !== removedService.name
+    );
+    setJoins(updatedJoins);
+
+    // Clean up any MCPs created from this service URL
+    let updatedMcps = mcps;
+    if ("url" in removedService) {
+      const serviceUrl = (removedService as ServiceConfig).url;
+      const mcpsToDelete = mcps.filter((m) => m.url === serviceUrl);
+      updatedMcps = mcps.filter((m) => m.url !== serviceUrl);
+      setMcps(updatedMcps);
+      
+      // Delete their entities from the database as well
+      for (const mcp of mcpsToDelete) {
+        await deleteODataMCPEntities(mcp.name);
+      }
+    }
+    
+    await saveSettings({ llm, services: updatedServices, mcps: updatedMcps, joins: updatedJoins });
   };
 
-  const addJoin = () => {
-    if (!newJoin.source_service || !newJoin.target_service || !newJoin.join_key) return;
-    setJoins((prev) => [...prev, { ...newJoin }]);
-    setNewJoin({ source_service: "", target_service: "", source_table: "", target_table: "", join_key: "" });
-  };
-
-  const removeJoin = (index: number) => {
-    setJoins((prev) => prev.filter((_, i) => i !== index));
+  const removeMCP = async (mcpName: string) => {
+    const updatedMcps = mcps.filter((m) => m.name !== mcpName);
+    setMcps(updatedMcps);
+    await deleteODataMCPEntities(mcpName);
+    await saveSettings({ llm, services, mcps: updatedMcps, joins });
   };
 
   const tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
@@ -308,212 +333,251 @@ export function SettingsView({ onBack }: SettingsViewProps) {
           </div>
         )}
 
-        {activeTab === "services" && (
-          <div className="settings-panel animate-fadeIn">
-            {/* Existing Services */}
-            <div className="settings-section">
-              <h3 className="settings-section-title">
-                <Server size={16} />
-                <span>OData Services</span>
-              </h3>
-              <p className="settings-section-desc">
-                Manage connected OData services. Add new services or remove existing ones.
-              </p>
+        {activeTab === "services" && (() => {
+          const joinedServices = services
+            .map((s, idx) => ({ ...s, originalIndex: idx }))
+            .filter((svc) => "is_joined" in svc && svc.is_joined) as (JoinedServiceConfig & { originalIndex: number })[];
+          
+          const odataServices = services
+            .map((s, idx) => ({ ...s, originalIndex: idx }))
+            .filter((svc) => !("is_joined" in svc && svc.is_joined)) as (ServiceConfig & { originalIndex: number })[];
 
-              {services.length > 0 ? (
-                <div className="settings-service-list">
-                  {services.map((svc, idx) => (
-                    <div key={idx} className="settings-service-card">
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-primary)", marginBottom: 2 }}>
-                          {svc.name}
-                        </div>
-                        <div style={{ fontSize: "12px", color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {svc.url}
-                        </div>
-                        {svc.description && (
-                          <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: 4 }}>
-                            {svc.description}
+          const hasActiveMCPs = mcps.length > 0 || joinedServices.length > 0;
+
+          return (
+            <div className="settings-panel animate-fadeIn">
+              {/* Active MCP Services */}
+              <div className="settings-section">
+                <h3 className="settings-section-title">
+                  <Network size={16} style={{ color: "var(--text-accent)" }} />
+                  <span>Active MCP Services</span>
+                </h3>
+                <p className="settings-section-desc">
+                  These MCPs are active and registered in SurrealDB. Click "Edit MCP" to customize the selected entities or view details.
+                </p>
+
+                {hasActiveMCPs ? (
+                  <div className="settings-service-list">
+                    {/* Custom MCPs */}
+                    {mcps.map((mcp) => (
+                      <div key={`mcp-${mcp.name}`} className="settings-service-card">
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                            <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-primary)" }}>
+                              {mcp.name}
+                            </div>
+                            <span className="mcp-service-badge">
+                              <Check size={9} />
+                              MCP ACTIVE
+                            </span>
                           </div>
-                        )}
+                          <div style={{ fontSize: "12px", color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            Service: {mcp.service_name}
+                            <span style={{ margin: "0 6px", opacity: 0.5 }}>•</span>
+                            {mcp.url}
+                          </div>
+                          {mcp.description && (
+                            <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: 4 }}>
+                              {mcp.description}
+                            </div>
+                          )}
+                          {mcp.prompt && (
+                            <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: 4, display: "flex", gap: 4, alignItems: "flex-start" }}>
+                              <span style={{ fontWeight: 600 }}>Prompt:</span>
+                              <span style={{ opacity: 0.9, fontStyle: "italic" }}>{mcp.prompt}</span>
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => onNavigateToDiscovery({ mcp })}
+                          className="settings-discover-btn"
+                          title="Edit active MCP entities"
+                          style={{ marginRight: 4 }}
+                        >
+                          <Network size={12} />
+                          <span>Edit MCP</span>
+                        </button>
+                        <button
+                          onClick={() => removeMCP(mcp.name)}
+                          className="settings-delete-btn"
+                          title="Remove MCP"
+                        >
+                          <Trash2 size={14} />
+                        </button>
                       </div>
-                      <button
-                        onClick={() => removeService(idx)}
-                        className="settings-delete-btn"
-                        title="Remove service"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="settings-empty">
-                  <Server size={24} style={{ opacity: 0.3 }} />
-                  <span>No services configured yet</span>
-                </div>
-              )}
+                    ))}
 
-              {/* Add Service Form */}
-              <div className="settings-add-form">
-                <div className="settings-add-form-title">
-                  <Plus size={14} />
-                  <span>Add New Service</span>
+                    {/* Joined MCPs */}
+                    {joinedServices.map((svc) => (
+                      <div key={`joined-${svc.originalIndex}`} className="settings-service-card">
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                            <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-primary)" }}>
+                              {svc.name}
+                            </div>
+                            <span className="joined-service-badge">
+                              <Merge size={9} />
+                              JOINED
+                            </span>
+                          </div>
+                          <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
+                            {svc.source_service} ↔ {svc.target_service}
+                            <span style={{ margin: "0 6px", opacity: 0.5 }}>•</span>
+                            {svc.relation_type}
+                            <span style={{ margin: "0 6px", opacity: 0.5 }}>•</span>
+                            Key: {svc.join_key}
+                          </div>
+                          {svc.description && (
+                            <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: 4 }}>
+                              {svc.description}
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => removeService(svc.originalIndex)}
+                          className="settings-delete-btn"
+                          title="Remove Joined MCP"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="settings-empty">
+                    <Network size={24} style={{ opacity: 0.3 }} />
+                    <span>No active MCP services. Use the available OData endpoints below to register schemas.</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Available OData Services */}
+              <div className="settings-section" style={{ marginTop: 32 }}>
+                <h3 className="settings-section-title">
+                  <Server size={16} />
+                  <span>Available OData Services</span>
+                </h3>
+                <p className="settings-section-desc">
+                  Connection endpoints waiting to be configured. Click "Create MCP" to choose entities and activate them.
+                </p>
+
+                {odataServices.length > 0 ? (
+                  <div className="settings-service-list">
+                    {odataServices.map((svc) => (
+                      <div key={svc.originalIndex} className="settings-service-card">
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                            <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-primary)" }}>
+                              {svc.name}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: "12px", color: "var(--text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {svc.url}
+                          </div>
+                          {svc.description && (
+                            <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: 4 }}>
+                              {svc.description}
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => onNavigateToDiscovery({ service: svc })}
+                          className="settings-discover-btn"
+                          title="Discover entities and create MCP"
+                          style={{ marginRight: 4 }}
+                        >
+                          <Network size={12} />
+                          <span>Create MCP</span>
+                        </button>
+                        <button
+                          onClick={() => removeService(svc.originalIndex)}
+                          className="settings-delete-btn"
+                          title="Remove service endpoint"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="settings-empty">
+                    <Server size={24} style={{ opacity: 0.3 }} />
+                    <span>No endpoints configured. Add a new service endpoint below.</span>
+                  </div>
+                )}
+
+                {/* Add Service Form */}
+                <div className="settings-add-form" style={{ marginTop: 20 }}>
+                  <div className="settings-add-form-title">
+                    <Plus size={14} />
+                    <span>Add New Service Endpoint</span>
+                  </div>
+                  <div className="settings-form-grid">
+                    <div className="settings-field">
+                      <label className="settings-label">Service Name</label>
+                      <input
+                        type="text"
+                        className="settings-input"
+                        placeholder="e.g., Northwind V4"
+                        value={newService.name}
+                        onChange={(e) => setNewService({ ...newService, name: e.target.value })}
+                      />
+                    </div>
+                    <div className="settings-field">
+                      <label className="settings-label">Service URL</label>
+                      <input
+                        type="text"
+                        className="settings-input"
+                        placeholder="e.g., https://services.odata.org/V4/Northwind/Northwind.svc"
+                        value={newService.url}
+                        onChange={(e) => setNewService({ ...newService, url: e.target.value })}
+                      />
+                    </div>
+                    <div className="settings-field" style={{ gridColumn: "1 / -1" }}>
+                      <label className="settings-label">Description (optional)</label>
+                      <input
+                        type="text"
+                        className="settings-input"
+                        placeholder="Brief description of this service"
+                        value={newService.description}
+                        onChange={(e) => setNewService({ ...newService, description: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <button
+                    onClick={addService}
+                    disabled={!newService.name || !newService.url}
+                    className="settings-add-btn"
+                  >
+                    <Plus size={15} />
+                    <span>Add Service</span>
+                  </button>
                 </div>
-                <div className="settings-form-grid">
-                  <div className="settings-field">
-                    <label className="settings-label">Service Name</label>
-                    <input
-                      type="text"
-                      className="settings-input"
-                      placeholder="e.g., Northwind V4"
-                      value={newService.name}
-                      onChange={(e) => setNewService({ ...newService, name: e.target.value })}
-                    />
-                  </div>
-                  <div className="settings-field">
-                    <label className="settings-label">Service URL</label>
-                    <input
-                      type="text"
-                      className="settings-input"
-                      placeholder="e.g., https://services.odata.org/V4/Northwind/Northwind.svc"
-                      value={newService.url}
-                      onChange={(e) => setNewService({ ...newService, url: e.target.value })}
-                    />
-                  </div>
-                  <div className="settings-field" style={{ gridColumn: "1 / -1" }}>
-                    <label className="settings-label">Description (optional)</label>
-                    <input
-                      type="text"
-                      className="settings-input"
-                      placeholder="Brief description of this service"
-                      value={newService.description}
-                      onChange={(e) => setNewService({ ...newService, description: e.target.value })}
-                    />
-                  </div>
-                </div>
+              </div>
+
+              {/* Join MCPs Section */}
+              <div className="settings-section" style={{ marginTop: 32 }}>
+                <h3 className="settings-section-title">
+                  <Merge size={16} />
+                  <span>Join Services</span>
+                </h3>
+                <p className="settings-section-desc">
+                  Combine two existing services into a new, independent Joined MCP.
+                  The agent will be able to query data across both services using the join relationship.
+                </p>
+
                 <button
-                  onClick={addService}
-                  disabled={!newService.name || !newService.url}
+                  onClick={onNavigateToJoin}
                   className="settings-add-btn"
+                  style={{ width: "100%", justifyContent: "center" }}
                 >
-                  <Plus size={15} />
-                  <span>Add Service</span>
+                  <Merge size={15} />
+                  <span>Create Joined MCP</span>
                 </button>
               </div>
             </div>
-
-            {/* Joins */}
-            <div className="settings-section" style={{ marginTop: 32 }}>
-              <h3 className="settings-section-title">
-                <Link2 size={16} />
-                <span>Service Joins</span>
-              </h3>
-              <p className="settings-section-desc">
-                Define relationships between tables across services. Useful when two services share a common key.
-              </p>
-
-              {joins.length > 0 ? (
-                <div className="settings-service-list">
-                  {joins.map((join, idx) => (
-                    <div key={idx} className="settings-service-card">
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-primary)" }}>
-                          {join.source_service}.{join.source_table}
-                          <span style={{ color: "var(--text-accent)", margin: "0 8px" }}>⟷</span>
-                          {join.target_service}.{join.target_table}
-                        </div>
-                        <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: 3 }}>
-                          Join Key: <code style={{ background: "var(--bg-tertiary)", padding: "1px 5px", borderRadius: 4, fontSize: "10.5px" }}>{join.join_key}</code>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => removeJoin(idx)}
-                        className="settings-delete-btn"
-                        title="Remove join"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="settings-empty">
-                  <Link2 size={24} style={{ opacity: 0.3 }} />
-                  <span>No joins configured</span>
-                </div>
-              )}
-
-              {/* Add Join Form */}
-              <div className="settings-add-form">
-                <div className="settings-add-form-title">
-                  <Plus size={14} />
-                  <span>Add New Join</span>
-                </div>
-                <div className="settings-form-grid">
-                  <div className="settings-field">
-                    <label className="settings-label">Source Service</label>
-                    <input
-                      type="text"
-                      className="settings-input"
-                      placeholder="e.g., Northwind"
-                      value={newJoin.source_service}
-                      onChange={(e) => setNewJoin({ ...newJoin, source_service: e.target.value })}
-                    />
-                  </div>
-                  <div className="settings-field">
-                    <label className="settings-label">Target Service</label>
-                    <input
-                      type="text"
-                      className="settings-input"
-                      placeholder="e.g., SAP Sales"
-                      value={newJoin.target_service}
-                      onChange={(e) => setNewJoin({ ...newJoin, target_service: e.target.value })}
-                    />
-                  </div>
-                  <div className="settings-field">
-                    <label className="settings-label">Source Table</label>
-                    <input
-                      type="text"
-                      className="settings-input"
-                      placeholder="e.g., Orders"
-                      value={newJoin.source_table}
-                      onChange={(e) => setNewJoin({ ...newJoin, source_table: e.target.value })}
-                    />
-                  </div>
-                  <div className="settings-field">
-                    <label className="settings-label">Target Table</label>
-                    <input
-                      type="text"
-                      className="settings-input"
-                      placeholder="e.g., SalesOrders"
-                      value={newJoin.target_table}
-                      onChange={(e) => setNewJoin({ ...newJoin, target_table: e.target.value })}
-                    />
-                  </div>
-                  <div className="settings-field" style={{ gridColumn: "1 / -1" }}>
-                    <label className="settings-label">Join Key</label>
-                    <input
-                      type="text"
-                      className="settings-input"
-                      placeholder="e.g., CustomerID"
-                      value={newJoin.join_key}
-                      onChange={(e) => setNewJoin({ ...newJoin, join_key: e.target.value })}
-                    />
-                  </div>
-                </div>
-                <button
-                  onClick={addJoin}
-                  disabled={!newJoin.source_service || !newJoin.target_service || !newJoin.join_key}
-                  className="settings-add-btn"
-                >
-                  <Plus size={15} />
-                  <span>Add Join</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {activeTab === "graph" && (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>

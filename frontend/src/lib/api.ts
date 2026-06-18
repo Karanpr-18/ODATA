@@ -206,17 +206,41 @@ export interface ServiceConfig {
   description: string;
 }
 
+export interface MCPConfig {
+  name: string;
+  service_name: string;
+  url: string;
+  description: string;
+  entity_sets: string[];
+  entity_descriptions?: Record<string, string>;
+  prompt?: string;
+}
+
 export interface JoinConfig {
   source_service: string;
   target_service: string;
   source_table: string;
   target_table: string;
   join_key: string;
+  relation_type?: "1-1" | "1-many" | "many-to-many";
+}
+
+export interface JoinedServiceConfig {
+  name: string;
+  description: string;
+  is_joined: true;
+  source_service: string;
+  target_service: string;
+  source_table: string;
+  target_table: string;
+  join_key: string;
+  relation_type: "1-1" | "1-many" | "many-to-many";
 }
 
 export interface AppSettings {
   llm: LLMConfig;
-  services: ServiceConfig[];
+  services: (ServiceConfig | JoinedServiceConfig)[];
+  mcps: MCPConfig[];
   joins: JoinConfig[];
 }
 
@@ -232,6 +256,7 @@ export async function fetchSettings(): Promise<AppSettings> {
     return {
       llm: { provider: "", active_model: "", fallback_model: "", api_keys: {} },
       services: [],
+      mcps: [],
       joins: [],
     };
   }
@@ -250,3 +275,82 @@ export async function saveSettings(settings: Partial<AppSettings>): Promise<bool
     return false;
   }
 }
+
+export interface DiscoveredEntity {
+  name: string;
+  entity_type: string;
+}
+
+export interface DiscoveredMetadata {
+  entity_sets: DiscoveredEntity[];
+  registered_entities: { name: string; description: string }[];
+}
+
+export async function fetchODataMetadata(url: string, mcpName?: string): Promise<DiscoveredMetadata> {
+  try {
+    const res = await fetch(`${API_BASE}/api/settings/metadata`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, mcp_name: mcpName || null }),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || "Failed to fetch metadata");
+    }
+    const data = await res.json();
+    return {
+      entity_sets: data.entity_sets || [],
+      registered_entities: data.registered_entities || [],
+    };
+  } catch (err) {
+    console.error("fetchODataMetadata error:", err);
+    throw err;
+  }
+}
+
+export interface RegisterEntitiesResponse {
+  status: string;
+  registered_entities_count: number;
+  relationships_created_count: number;
+}
+
+export async function registerODataEntities(
+  serviceName: string,
+  url: string,
+  entitySets: string[],
+  entityDescriptions?: Record<string, string>
+): Promise<RegisterEntitiesResponse> {
+  try {
+    const res = await fetch(`${API_BASE}/api/settings/register_entities`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service_name: serviceName,
+        url,
+        entity_sets: entitySets,
+        entity_descriptions: entityDescriptions || null,
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(errText || "Failed to register entities");
+    }
+    return await res.json();
+  } catch (err) {
+    console.error("registerODataEntities error:", err);
+    throw err;
+  }
+}
+
+export async function deleteODataMCPEntities(mcpName: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/api/settings/mcp/${encodeURIComponent(mcpName)}`, {
+      method: "DELETE",
+    });
+    return res.ok;
+  } catch (err) {
+    console.error("deleteODataMCPEntities error:", err);
+    return false;
+  }
+}
+

@@ -4,15 +4,47 @@ or direct answer based on the retrieved context.
 """
 
 import logging
+import os
+import sys
+import json
 from typing import Any
 
 from langchain_core.messages import SystemMessage, HumanMessage
-from app.services.llm_factory import get_llm
+from app.services.llm_factory import get_llm, extract_token_usage
 
 from app.config import get_settings
 from app.graph.state import AgentState
+from app.services.db_client import get_db
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger(__name__)
+
+
+async def get_mcp_tools() -> list:
+    """Connect to odata_mcp server via stdio and get tools list."""
+    server_script = os.path.join(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")),
+        "mcp_servers/odata_mcp/server.py"
+    )
+    
+    server_params = StdioServerParameters(
+        command=sys.executable,
+        args=[server_script],
+        env=os.environ.copy()
+    )
+    
+    try:
+        logger.info("Listing MCP tools from: %s", server_script)
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.list_tools()
+                return result.tools
+    except Exception as e:
+        logger.error("Failed to list MCP tools: %s", e)
+        return []
+
 
 # System prompt that instructs the LLM on its role and output format
 SYSTEM_PROMPT = """You are an expert SAP OData query assistant. Your job is to help users query SAP systems using natural language.
@@ -58,8 +90,9 @@ Based on the SAP entity schema, graph relationships, and any past corrections pr
 - Always use proper SAP OData v2 syntax
 - Use $filter for conditions: e.g., `$filter=CompanyCode eq '1000' and PostingDate ge datetime'2024-01-01T00:00:00'`
 - Use $select to limit fields for performance
+- **Token Optimization & Pagination (CRITICAL)**: If the user asks for "top N", "best N", or "first N" records (e.g., "top 5", "best 10"), you MUST use the `$top=N` query parameter (and `$skip` if paginating). Do NOT fetch the entire dataset and limit it in Python. ALWAYS push the limit to the OData query level to save tokens.
+- **$select List Consistency (CRITICAL)**: If you specify a `$select` parameter in the OData query, you MUST include every single column that is read, referenced, or filtered in the Python script. For example, if the Python script accesses `df['ShipCountry']` or `df['ShipName']`, then `ShipCountry` and `ShipName` MUST be explicitly listed in your `$select` parameter list. Failing to do so will cause a KeyError and crash the execution.
 - Use $expand for navigation properties based on the graph context
-- Use $top and $skip for pagination
 - Use $orderby for sorting
 - **Relational Aggregations (CRITICAL)**: If a query requires counting, summing, or aggregating child relations (e.g. counting orders per customer, summing item costs per invoice):
   * Do NOT query the parent entity and use `$expand` to count related children (e.g. do not expand `/Customers` to count orders). OData servers heavily paginate expanded properties, leading to incorrect counts.
@@ -182,6 +215,55 @@ async def generate_response(state: AgentState) -> dict[str, Any]:
     else:
         user_query = ""
 
+    # Fetch settings to get any custom MCP instructions/prompts
+    db = get_db()
+    mcp_instructions = []
+    try:
+        results = await db.query("SELECT mcps FROM settings WHERE id = settings:config;")
+        if results and len(results) > 0:
+            mcps_list = results[0].get("mcps", [])
+            for mcp_item in mcps_list:
+                name = mcp_item.get("name")
+                prompt_text = mcp_item.get("prompt")
+                if name and prompt_text and prompt_text.strip():
+                    mcp_instructions.append(f"Instructions for MCP '{name}': {prompt_text.strip()}")
+    except Exception as e:
+        logger.warning("Failed to fetch MCP prompts from settings: %s", e)
+
+    # Fetch registered MCP OData tools dynamically
+    mcp_tools = await get_mcp_tools()
+
+    # Filter tool bindings to the minimum necessary set to save input tokens.
+    # Strategy: try to bind ONLY the single exact tool for the matched entity first.
+    # If that fails (custom or static entity IDs), fall back to the service prefix filter.
+    if matched_entity and matched_entity.get("module"):
+        safe_service = matched_entity.get("module", "").lower().replace(" ", "_").replace("-", "_")
+        entity_set = matched_entity.get("entity_set", "").lower().replace(" ", "_").replace("-", "_")
+        exact_tool_name = f"fetch_{safe_service}_{entity_set}"
+        exact_match = [t for t in mcp_tools if t.name == exact_tool_name]
+        if exact_match:
+            # Perfect single-tool binding — minimum possible token overhead
+            mcp_tools = exact_match
+            logger.info("Tool binding: exact match for '%s' (1 tool bound)", exact_tool_name)
+        else:
+            # Fallback: bind all tools that share the same service prefix
+            prefix = f"fetch_{safe_service}_"
+            filtered_tools = [t for t in mcp_tools if t.name.startswith(prefix)]
+            if filtered_tools:
+                mcp_tools = filtered_tools
+            logger.info("Tool binding: service prefix match for '%s' (%d tools bound)", prefix, len(mcp_tools))
+
+    tools_desc = "\n".join(f"- {t.name}: {t.description}" for t in mcp_tools)
+    
+    # Inject tool context to system prompt to help both tool binding and fallback parsing
+    dynamic_system_prompt = SYSTEM_PROMPT + f"\n\n## Available MCP OData Tools:\n" \
+                                             f"You MUST use the appropriate tool to fetch data for your query. " \
+                                             f"Parameters like filter, select, top, skip, expand must be mapped correctly.\n{tools_desc}"
+
+    if mcp_instructions:
+        instructions_str = "\n".join(f"- {inst}" for inst in mcp_instructions)
+        dynamic_system_prompt += f"\n\n## Custom MCP Instructions:\n{instructions_str}"
+
     logger.info("Generating response with model: %s", model_name)
 
     try:
@@ -191,8 +273,30 @@ async def generate_response(state: AgentState) -> dict[str, Any]:
             max_tokens=2048,
         )
 
+        # Build OpenAI tool definitions from MCP tool schemas
+        openai_tools = []
+        for tool in mcp_tools:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema
+                }
+            })
+
+        # Bind tools to LLM with fallback safety
+        try:
+            if openai_tools:
+                llm_with_tools = llm.bind_tools(openai_tools)
+            else:
+                llm_with_tools = llm
+        except Exception as tool_err:
+            logger.warning("Failed to bind tools to LLM: %s. Falling back to unbound model.", tool_err)
+            llm_with_tools = llm
+
         llm_messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
+            SystemMessage(content=dynamic_system_prompt),
             HumanMessage(
                 content=(
                     f"## Retrieved Context\n\n{context_block}\n\n"
@@ -202,16 +306,64 @@ async def generate_response(state: AgentState) -> dict[str, Any]:
             ),
         ]
 
-        response = await llm.ainvoke(llm_messages)
-        raw_content = response.content.strip()
+        response = await llm_with_tools.ainvoke(llm_messages)
+        usage = extract_token_usage(response)
+        current_token_usage = state.get("token_usage") or {"input": 0, "output": 0, "total": 0}
+        new_token_usage = {
+            "input": current_token_usage.get("input", 0) + usage["input"],
+            "output": current_token_usage.get("output", 0) + usage["output"],
+            "total": current_token_usage.get("total", 0) + usage["total"]
+        }
+        raw_content = response.content.strip() if response.content else ""
 
-        # Strip <think>...</think> tags if reasoning models generate them
+        # Strip reasoning thoughts if present
         import re
         content = re.sub(r'<think>[\s\S]*?</think>', '', raw_content).strip()
 
         logger.info("Raw LLM response preview: %s", content[:150])
 
-        # Resilient parsing to extract prefix blocks even if LLM includes leading conversational text/warnings
+        # 1. Native Tool Calling Handling
+        if hasattr(response, "tool_calls") and response.tool_calls:
+            tool_call = response.tool_calls[0]
+            logger.info("LLM generated native tool call: %s", tool_call)
+            
+            tool_call_json = json.dumps({
+                "tool": tool_call["name"],
+                "arguments": tool_call["args"]
+            })
+
+            # Check if text response has a python calculation script
+            python_code = ""
+            if "```python" in content:
+                python_code = content.split("```python")[1].split("```")[0].strip()
+            elif "```" in content:
+                python_code = content.split("```")[1].split("```")[0].strip()
+
+            if python_code:
+                updates = {
+                    "generated_query": tool_call_json,
+                    "calculation_script": python_code,
+                    "query_type": "calculation",
+                    "needs_calculation": True,
+                    "error": "",
+                    "retry_count": retry_count,
+                    "token_usage": new_token_usage,
+                }
+            else:
+                updates = {
+                    "generated_query": tool_call_json,
+                    "query_type": "odata",
+                    "needs_calculation": False,
+                    "error": "",
+                    "retry_count": retry_count,
+                    "token_usage": new_token_usage,
+                }
+            
+            if should_clear_buffer:
+                updates["data_buffer"] = []
+            return updates
+
+        # 2. Resilient Text Prefix Parsing Fallback
         parsed_prefix = None
         cleaned_content = content
         
@@ -225,12 +377,11 @@ async def generate_response(state: AgentState) -> dict[str, Any]:
             parsed_prefix = "direct_answer"
             cleaned_content = content[content.find("[ANSWER]"):].strip()
         elif content.startswith("OData:") or "OData:" in content:
-            # Fallback if LLM missed prefix but outputted dual SCRIPT format
             parsed_prefix = "calculation"
             if "OData:" in content:
                 cleaned_content = content[content.find("OData:"):].strip()
         
-        logger.info("Parser resolved prefix type: %s", parsed_prefix or "fallback_direct")
+        logger.info("Parser resolved fallback prefix type: %s", parsed_prefix or "fallback_direct")
 
         # Parse response based on resolved prefix
         if parsed_prefix == "odata":
@@ -240,40 +391,34 @@ async def generate_response(state: AgentState) -> dict[str, Any]:
                 "needs_calculation": False,
                 "error": "",
                 "retry_count": retry_count,
+                "token_usage": new_token_usage,
             }
             if should_clear_buffer:
                 updates["data_buffer"] = []
             return updates
         elif parsed_prefix == "calculation":
-            # Parse OData line and Python block from the cleaned SCRIPT content
             content_to_parse = cleaned_content[8:].strip() if cleaned_content.startswith("[SCRIPT]") else cleaned_content
-            # Parse OData line and Python block
             odata_query = ""
             python_code = ""
             
-            # Extract OData query using regex
             odata_match = re.search(r"OData:\s*([^\n]+)", content_to_parse)
             if odata_match:
                 odata_query = odata_match.group(1).strip()
             
-            # Extract Python block
             if "```python" in content_to_parse:
                 python_code = content_to_parse.split("```python")[1].split("```")[0].strip()
             elif "```" in content_to_parse:
                 python_code = content_to_parse.split("```")[1].split("```")[0].strip()
             else:
-                # Fallback to lines after Code:
                 code_parts = content_to_parse.split("Code:")
                 if len(code_parts) > 1:
                     python_code = code_parts[1].strip()
             
-            # If no explicit OData query was parsed, try to extract a relative path fallback
             if not odata_query:
                 path_match = re.search(r"/([A-Za-z0-9_]+Set|[A-Za-z0-9_]+)", content_to_parse)
                 if path_match:
                     odata_query = path_match.group(0).strip()
                 else:
-                    # Fallback to general query
                     odata_query = "/Customers"
             
             updates = {
@@ -283,12 +428,12 @@ async def generate_response(state: AgentState) -> dict[str, Any]:
                 "needs_calculation": True,
                 "error": "",
                 "retry_count": retry_count,
+                "token_usage": new_token_usage,
             }
             if should_clear_buffer:
                 updates["data_buffer"] = []
             return updates
         else:
-            # Direct answer — strip [ANSWER] prefix if present
             answer = cleaned_content
             if cleaned_content.startswith("[ANSWER]"):
                 answer = cleaned_content[8:].strip()
@@ -299,6 +444,7 @@ async def generate_response(state: AgentState) -> dict[str, Any]:
                 "final_response": answer,
                 "error": "",
                 "retry_count": retry_count,
+                "token_usage": new_token_usage,
             }
             if should_clear_buffer:
                 updates["data_buffer"] = []
@@ -318,6 +464,7 @@ async def generate_response(state: AgentState) -> dict[str, Any]:
                     "You can get a free API key at https://console.groq.com"
                 ),
                 "error": error_msg,
+                "retry_count": retry_count,
             }
         return {
             "generated_query": "",
@@ -325,4 +472,6 @@ async def generate_response(state: AgentState) -> dict[str, Any]:
             "needs_calculation": False,
             "final_response": f"I encountered an error while processing your request: {error_msg}",
             "error": error_msg,
+            "retry_count": retry_count,
         }
+

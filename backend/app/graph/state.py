@@ -36,6 +36,7 @@ class AgentState(TypedDict):
     # ── Execution ──
     data_buffer: list[dict[str, Any]]         # Accumulated OData response data
     has_next_page: str                        # @odata.nextLink URL or empty string
+    total_count: int                          # Total number of records available server-side
 
     # ── Sandbox ──
     calculation_result: str                   # Sandbox execution output
@@ -50,3 +51,4 @@ class AgentState(TypedDict):
     retry_count: int                          # Number of automatic correction retries
     first_failed_query: str                   # The query/script from the first failed attempt
     first_error: str                          # The error message from the first failed attempt
+    token_usage: dict[str, int]                # Tracks input, output, and total tokens from LLM nodes

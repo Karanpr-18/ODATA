@@ -36,14 +36,46 @@ class ColumnAccessVisitor(ast.NodeVisitor):
     def visit_Attribute(self, node):
         # Handles df.column_name
         if isinstance(node.value, ast.Name) and node.value.id in ('df', 'data_df', 'dataframe'):
-            # Ignore standard pandas DataFrame attributes/methods
+            # Ignore standard pandas DataFrame / Series attributes and methods.
+            # This list should be kept in sync with the pandas public API to prevent
+            # false-positive column-not-found lint errors.
             df_methods = {
-                'groupby', 'sort_values', 'drop', 'dropna', 'sum', 'mean', 'count', 
-                'head', 'tail', 'describe', 'info', 'merge', 'join', 'concat', 
-                'reset_index', 'set_index', 'rename', 'apply', 'map', 'astype', 
-                'fillna', 'columns', 'index', 'values', 'loc', 'iloc', 'plot',
-                'to_json', 'to_dict', 'to_csv', 'value_counts', 'unique', 'nunique',
-                'empty', 'shape', 'size', 'dtypes', 'T'
+                # Reshaping / selection
+                'groupby', 'sort_values', 'sort_index', 'drop', 'dropna', 'drop_duplicates',
+                'head', 'tail', 'sample', 'nlargest', 'nsmallest',
+                'reset_index', 'set_index', 'reindex',
+                'pivot', 'pivot_table', 'melt', 'explode', 'stack', 'unstack', 'transpose',
+                'rename', 'rename_axis',
+                # Aggregation
+                'sum', 'mean', 'median', 'mode', 'std', 'var', 'sem',
+                'min', 'max', 'prod', 'count', 'nunique',
+                'cumsum', 'cumprod', 'cummax', 'cummin',
+                'diff', 'pct_change', 'clip', 'abs',
+                'idxmax', 'idxmin', 'any', 'all',
+                # Application
+                'apply', 'applymap', 'map', 'transform', 'agg', 'aggregate', 'pipe',
+                'astype', 'convert_dtypes', 'infer_objects',
+                # Filling / replacing
+                'fillna', 'interpolate', 'replace', 'ffill', 'bfill', 'pad', 'backfill',
+                'where', 'mask',
+                # Joining / merging
+                'merge', 'join', 'concat', 'append', 'assign',
+                # I/O
+                'to_json', 'to_dict', 'to_csv', 'to_excel', 'to_html', 'to_string',
+                # Metadata / inspection
+                'describe', 'info', 'memory_usage', 'isna', 'isnull', 'notna', 'notnull',
+                'isin', 'between', 'duplicated',
+                'columns', 'index', 'values', 'axes', 'dtypes', 'shape', 'size', 'ndim', 'T',
+                'loc', 'iloc', 'at', 'iat', 'xs',
+                'empty', 'items', 'iteritems', 'iterrows', 'itertuples',
+                # Stats / math
+                'corr', 'cov', 'skew', 'kurtosis', 'quantile', 'rank',
+                # String / datetime accessors
+                'str', 'dt', 'cat', 'sparse',
+                # Plotting
+                'plot', 'hist', 'boxplot',
+                # Misc
+                'copy', 'equals', 'value_counts', 'unique', 'squeeze',
             }
             if node.attr not in df_methods:
                 self.accessed_columns.add(node.attr)
@@ -64,25 +96,63 @@ class ColumnAccessVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node):
-        # Handles df.groupby('col') or df.groupby(['col1', 'col2'])
+        """Track column names used as arguments to specific DataFrame methods.
+
+        We only need to register column names that come from user-controlled
+        arguments so the schema validator can check them.  Method names in
+        ``col_arg_methods`` take column names as positional args or known
+        keyword args; we extract those and add them to ``accessed_columns``.
+        """
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id in ('df', 'data_df', 'dataframe'):
             method_name = node.func.attr
-            if method_name in ('groupby', 'sort_values', 'drop', 'dropna'):
+
+            # Methods that accept column names as positional args or keyword arg 'by'
+            positional_col_methods = {
+                'groupby', 'sort_values', 'drop', 'dropna',
+                'nlargest', 'nsmallest',
+            }
+            # Methods that accept column names via keyword arg 'subset'
+            subset_col_methods = {
+                'drop_duplicates', 'dropna', 'duplicated',
+            }
+            # Methods that accept column names via keyword arg 'columns'
+            columns_kw_methods = {
+                'rename', 'drop', 'pivot', 'pivot_table', 'melt', 'set_index',
+            }
+            # Methods that accept column names via keyword arg 'index'
+            index_kw_methods = {
+                'pivot', 'pivot_table', 'set_index',
+            }
+            # Methods that accept column names via keyword arg 'values'
+            values_kw_methods = {
+                'pivot', 'pivot_table', 'melt',
+            }
+
+            def _register_str_or_list(value_node):
+                """Add string constant(s) from an AST node to accessed_columns."""
+                if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
+                    self.accessed_columns.add(value_node.value)
+                elif isinstance(value_node, ast.List):
+                    for elt in value_node.elts:
+                        if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                            self.accessed_columns.add(elt.value)
+
+            if method_name in positional_col_methods:
                 for arg in node.args:
-                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                        self.accessed_columns.add(arg.value)
-                    elif isinstance(arg, ast.List):
-                        for elt in arg.elts:
-                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                                self.accessed_columns.add(elt.value)
-                for kw in node.keywords:
-                    if kw.arg in ('by', 'columns', 'on', 'left_on', 'right_on'):
-                        if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
-                            self.accessed_columns.add(kw.value.value)
-                        elif isinstance(kw.value, ast.List):
-                            for elt in kw.value.elts:
-                                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                                    self.accessed_columns.add(elt.value)
+                    _register_str_or_list(arg)
+
+            for kw in node.keywords:
+                if kw.arg in ('by', 'on', 'left_on', 'right_on') and method_name in positional_col_methods:
+                    _register_str_or_list(kw.value)
+                if kw.arg == 'subset' and method_name in subset_col_methods:
+                    _register_str_or_list(kw.value)
+                if kw.arg == 'columns' and method_name in columns_kw_methods:
+                    _register_str_or_list(kw.value)
+                if kw.arg == 'index' and method_name in index_kw_methods:
+                    _register_str_or_list(kw.value)
+                if kw.arg == 'values' and method_name in values_kw_methods:
+                    _register_str_or_list(kw.value)
+
         self.generic_visit(node)
 
 

@@ -4,8 +4,16 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Sidebar } from "@/components/sidebar";
 import { ChatArea } from "@/components/chat-area";
 import { SettingsView } from "@/components/settings-view";
-import { fetchThreads, createThread, deleteThread, renameThread, fetchThreadMessages } from "@/lib/api";
+import { DiscoveryView } from "@/components/discovery-view";
+import { JoinView } from "@/components/join-view";
+import { fetchThreads, createThread, deleteThread, renameThread, fetchThreadMessages, fetchSettings, ServiceConfig, JoinedServiceConfig, MCPConfig } from "@/lib/api";
 import { Thread, Message, MODELS } from "@/lib/types";
+
+type AppView =
+  | { type: "chat" }
+  | { type: "settings" }
+  | { type: "discovery"; service?: ServiceConfig; mcp?: MCPConfig }
+  | { type: "join" };
 
 export default function Home() {
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -14,15 +22,37 @@ export default function Home() {
   const [selectedModel, setSelectedModel] = useState(MODELS[0].id);
   const [isLoadingThreads, setIsLoadingThreads] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [currentView, setCurrentView] = useState<"chat" | "settings">("chat");
+  const [currentView, setCurrentView] = useState<AppView>({ type: "chat" });
+
+  // Track services for join view
+  const [services, setServices] = useState<(ServiceConfig | JoinedServiceConfig)[]>([]);
 
   // Skip loading messages from DB for newly created threads to prevent wiping state
   const shouldSkipLoadRef = useRef(false);
 
-  // Load threads on mount
+  // Sync active model from database settings
+  const syncModelFromSettings = useCallback(async () => {
+    try {
+      const settings = await fetchSettings();
+      if (settings && settings.llm && settings.llm.active_model) {
+        setSelectedModel(settings.llm.active_model);
+      }
+      if (settings && settings.services) {
+        setServices(settings.services);
+      }
+    } catch (err) {
+      console.error("Failed to sync model from settings:", err);
+    }
+  }, []);
+
+  // Load threads and settings on mount and when views switch
   useEffect(() => {
     loadThreads();
   }, []);
+
+  useEffect(() => {
+    syncModelFromSettings();
+  }, [currentView, syncModelFromSettings]);
 
   // Load messages when active thread changes
   useEffect(() => {
@@ -57,7 +87,7 @@ export default function Home() {
       setActiveThreadId(thread.id);
       setMessages([]);
       // Switch to chat view if in settings
-      setCurrentView("chat");
+      setCurrentView({ type: "chat" });
     }
   }, []);
 
@@ -84,7 +114,7 @@ export default function Home() {
   const handleSelectThread = useCallback((threadId: string) => {
     setActiveThreadId(threadId);
     // Switch to chat view when selecting a thread
-    setCurrentView("chat");
+    setCurrentView({ type: "chat" });
   }, []);
 
   const handleThreadCreated = useCallback((thread: Thread) => {
@@ -103,6 +133,56 @@ export default function Home() {
     );
   }, []);
 
+  const handleJoinedServiceCreated = useCallback((newService: JoinedServiceConfig) => {
+    setServices((prev) => [...prev, newService]);
+  }, []);
+
+  /* Render the active view */
+  const renderView = () => {
+    switch (currentView.type) {
+      case "settings":
+        return (
+          <SettingsView
+            onBack={() => setCurrentView({ type: "chat" })}
+            onNavigateToDiscovery={(params) =>
+              setCurrentView({ type: "discovery", ...params })
+            }
+            onNavigateToJoin={() => setCurrentView({ type: "join" })}
+          />
+        );
+      case "discovery":
+        return (
+          <DiscoveryView
+            service={currentView.service}
+            mcp={currentView.mcp}
+            onBack={() => setCurrentView({ type: "settings" })}
+          />
+        );
+      case "join":
+        return (
+          <JoinView
+            services={services}
+            onBack={() => setCurrentView({ type: "settings" })}
+            onServiceCreated={handleJoinedServiceCreated}
+          />
+        );
+      case "chat":
+      default:
+        return (
+          <ChatArea
+            messages={messages}
+            setMessages={setMessages}
+            activeThreadId={activeThreadId}
+            selectedModel={selectedModel}
+            sidebarOpen={sidebarOpen}
+            onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+            onThreadCreated={handleThreadCreated}
+            onUpdateThreadTitle={handleUpdateThreadTitle}
+          />
+        );
+    }
+  };
+
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
       <Sidebar
@@ -115,22 +195,9 @@ export default function Home() {
         onDeleteThread={handleDeleteThread}
         onRenameThread={handleRenameThread}
         onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-        onOpenSettings={() => setCurrentView("settings")}
+        onOpenSettings={() => setCurrentView({ type: "settings" })}
       />
-      {currentView === "chat" ? (
-        <ChatArea
-          messages={messages}
-          setMessages={setMessages}
-          activeThreadId={activeThreadId}
-          selectedModel={selectedModel}
-          sidebarOpen={sidebarOpen}
-          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-          onThreadCreated={handleThreadCreated}
-          onUpdateThreadTitle={handleUpdateThreadTitle}
-        />
-      ) : (
-        <SettingsView onBack={() => setCurrentView("chat")} />
-      )}
+      {renderView()}
     </div>
   );
 }

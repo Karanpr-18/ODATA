@@ -141,6 +141,33 @@ try:
             kwargs['dropna'] = False
         return _orig_series_groupby(self, *args, **kwargs)
     pd.Series.groupby = custom_series_groupby
+
+    # Patch json_normalize to handle keyword 'prefix' (Omit or map to record_prefix) and correct record_path envelopes
+    _orig_json_normalize = pd.json_normalize
+    def custom_json_normalize(data, record_path=None, meta=None, meta_prefix=None, record_prefix=None, errors='raise', **kwargs):
+        if "prefix" in kwargs:
+            prefix_val = kwargs.pop("prefix")
+            if record_prefix is None:
+                record_prefix = prefix_val
+        if record_path is not None:
+            path_list = [record_path] if isinstance(record_path, str) else list(record_path)
+            if path_list and path_list[0] in ('value', 'results', 'd', 'data'):
+                has_key = False
+                if data and isinstance(data, list) and isinstance(data[0], dict):
+                    has_key = path_list[0] in data[0]
+                if not has_key:
+                    record_path = None
+                    meta = None
+        return _orig_json_normalize(
+            data,
+            record_path=record_path,
+            meta=meta,
+            meta_prefix=meta_prefix,
+            record_prefix=record_prefix,
+            errors=errors,
+            **kwargs
+        )
+    pd.json_normalize = custom_json_normalize
 except:
     pass
 
