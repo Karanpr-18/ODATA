@@ -142,6 +142,16 @@ async def chat_endpoint(request: Request):
                     
                     yield f'data: {json.dumps({"type": "status", "content": current_log})}\n\n'
                 elif node_name == "execute_odata":
+                    # Clean up any previous execute_odata log updates to overwrite progress in-place
+                    if "\n    *   *Succeeded*: retrieved" in current_log:
+                        idx = current_log.find("\n    *   *Succeeded*: retrieved")
+                        if idx != -1:
+                            current_log = current_log[:idx]
+                    elif "\n    *   *Error*:" in current_log:
+                        idx = current_log.find("\n    *   *Error*:")
+                        if idx != -1:
+                            current_log = current_log[:idx]
+                            
                     data_buffer = result.get("data_buffer", [])
                     has_next = result.get("has_next_page", "")
                     error = result.get("error", "")
@@ -158,11 +168,13 @@ async def chat_endpoint(request: Request):
                         if has_next:
                             current_log += f"\n    *   *Pagination nextLink detected*: `{has_next[:50]}...` (fetching next page...)"
                     
-                    needs_calc = result.get("needs_calculation", False)
-                    if needs_calc:
-                        current_log += "\n*   🧮 **Calculation Sandbox**: Spawning isolated python host subprocess..."
-                    else:
-                        current_log += "\n*   📊 **Egress**: Compiling tables and chart configurations..."
+                    # Only append next step headers when pagination has fully completed
+                    if not has_next:
+                        needs_calc = result.get("needs_calculation", False)
+                        if needs_calc:
+                            current_log += "\n*   🧮 **Calculation Sandbox**: Spawning isolated python host subprocess..."
+                        else:
+                            current_log += "\n*   📊 **Egress**: Compiling tables and chart configurations..."
                     
                     yield f'data: {json.dumps({"type": "status", "content": current_log})}\n\n'
                 elif node_name == "run_sandbox":

@@ -205,6 +205,13 @@ async def format_response(state: AgentState) -> dict[str, Any]:
         except Exception as memory_err:
             logger.warning("Failed to save learned correction memory: %s", memory_err)
 
+    # Extract user query first to check context/intent
+    messages = state.get("messages", [])
+    user_query = ""
+    if messages:
+        last = messages[-1]
+        user_query = last.content if hasattr(last, "content") else str(last)
+
     # If there's already a final response (from direct_answer), use it
     if final_response and query_type == "direct_answer":
         return {
@@ -214,13 +221,23 @@ async def format_response(state: AgentState) -> dict[str, Any]:
 
     response_parts = []
 
+    # Check if a chart was explicitly requested by user
+    has_chart_request = False
+    chart_keywords = ["chart", "pie", "bar", "line", "area", "graph", "plot"]
+    if any(k in user_query.lower() for k in chart_keywords):
+        has_chart_request = True
+
     # ── OData Results ──
     if query_type == "odata" and data_buffer:
         entity_name = matched_entity.get("name", "SAP")
         response_parts.append(f"### 📊 {entity_name} — Query Results\n")
-
         response_parts.append(f"**Records Found:** {len(data_buffer)}\n")
-        response_parts.append(_format_table(data_buffer))
+        
+        # Suppress raw records list when displaying visual chart configurations
+        if not has_chart_request:
+            response_parts.append(_format_table(data_buffer))
+        else:
+            response_parts.append("_Raw records omitted; displaying visualization below._")
 
     # ── Calculation Results ──
     elif query_type == "calculation":
@@ -242,11 +259,17 @@ async def format_response(state: AgentState) -> dict[str, Any]:
 
             if parsed is not None:
                 if isinstance(parsed, dict):
-                    for key, value in parsed.items():
-                        if isinstance(value, list) and value and isinstance(value[0], dict):
-                            response_parts.append(f"**{key}:**\n\n" + _format_table(value))
-                        else:
-                            response_parts.append(f"**{key}:** {value}")
+                    # Check if it's a chart output JSON
+                    if parsed.get("type") == "chart" and "data" in parsed:
+                        title = parsed.get("title", "Chart Data")
+                        response_parts.append(f"### 📊 {title}\n")
+                        response_parts.append(_format_table(parsed["data"]))
+                    else:
+                        for key, value in parsed.items():
+                            if isinstance(value, list) and value and isinstance(value[0], dict):
+                                response_parts.append(f"**{key}:**\n\n" + _format_table(value))
+                            else:
+                                response_parts.append(f"**{key}:** {value}")
                 elif isinstance(parsed, list):
                     response_parts.append(_format_table(parsed))
                 else:
@@ -483,6 +506,17 @@ async def format_response(state: AgentState) -> dict[str, Any]:
     # Fallback to data_buffer if no chart was generated from calculation_result
     if not chart_block and data_buffer:
         chart_block = _try_generate_chart_json(data_buffer, user_query)
+        if chart_block:
+            try:
+                # Append the small aggregated chart table in Markdown next to it
+                json_str = chart_block.split("```json")[1].split("```")[0].strip()
+                parsed_chart = json.loads(json_str)
+                if parsed_chart.get("type") == "chart" and "data" in parsed_chart:
+                    title = parsed_chart.get("title", "Chart Data")
+                    table_md = f"### 📊 {title}\n\n" + _format_table(parsed_chart["data"])
+                    final += "\n\n" + table_md
+            except Exception as parse_err:
+                logger.warning("Failed to render aggregated table for generated fallback chart: %s", parse_err)
 
     if chart_block:
         final += chart_block

@@ -34,11 +34,16 @@ class Settings(BaseSettings):
     # ── SAP OData Gateway (mocked for now) ──
     sap_odata_base_url: str = "https://sap-gateway.example.com/sap/opu/odata/sap/"
     sap_client: str = "100"
+    sap_odata_user: str = ""
+    sap_odata_pass: str = ""
 
     # ── Code Sandbox ──
     use_docker: bool = True
     sandbox_docker_image: str = "python:3.10-alpine"
     sandbox_timeout_seconds: int = 30
+
+    # ── Pagination Settings ──
+    odata_pagination_limit: int = 100
 
     # ── Available Groq Models ──
     @property

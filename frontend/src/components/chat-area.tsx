@@ -444,7 +444,7 @@ export function ChatArea({
               color: "var(--text-primary)",
             }}
           >
-            SAP OData Assistant
+            Project Nexus
           </span>
         </div>
         {isStreaming && (
@@ -492,10 +492,9 @@ export function ChatArea({
             <div className="welcome-icon-ring">
               <Database size={36} style={{ color: "var(--accent-primary)" }} />
             </div>
-            <h1 className="welcome-title">SAP OData Assistant</h1>
+            <h1 className="welcome-title">Project Nexus</h1>
             <p className="welcome-subtitle">
-              Your AI-powered enterprise companion for SAP OData queries,
-              analytics, and data exploration. Ask anything about your SAP data.
+              Next-Gen Assistant for Enterprise Data Orchestration. Ask anything about your SAP data.
             </p>
             <div className="welcome-chips">
               {suggestions.map((s, i) => (
@@ -647,7 +646,7 @@ export function ChatArea({
             opacity: 0.7,
           }}
         >
-          SAP OData Assistant can make mistakes. Verify important data.
+          Project Nexus can make mistakes. Verify important data.
         </div>
       </div>
     </div>

@@ -148,7 +148,7 @@ export function Sidebar({
                 lineHeight: 1.2,
               }}
             >
-              SAP Assistant
+              Project Nexus
             </div>
             <div
               style={{
@@ -157,7 +157,7 @@ export function Sidebar({
                 fontWeight: 500,
               }}
             >
-              Enterprise AI
+              OData Orchestration
             </div>
           </div>
         </div>
@@ -295,9 +295,8 @@ export function Sidebar({
               ) : (
                 /* Thread Item */
                 <div
-                  className={`sidebar-thread ${
-                    activeThreadId === thread.id ? "active" : ""
-                  }`}
+                  className={`sidebar-thread ${activeThreadId === thread.id ? "active" : ""
+                    }`}
                   onClick={() => onSelectThread(thread.id)}
                 >
                   <MessageSquare size={15} style={{ flexShrink: 0, opacity: 0.6 }} />

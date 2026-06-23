@@ -19,6 +19,33 @@ from app.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
 
+
+def is_explicit_limit_requested(user_query: str) -> bool:
+    """Check if the user explicitly requested a limit (e.g. 'top 5', 'first 10')."""
+    import re
+    query_lower = user_query.lower()
+    
+    # Common pattern for explicit limit
+    patterns = [
+        r"\btop\s+\d+",
+        r"\bfirst\s+\d+",
+        r"\blimit\s+\d+",
+        r"\bshow\s+\d+",
+        r"\bget\s+\d+",
+        r"\bworst\s+\d+",
+        r"\bbest\s+\d+",
+        r"\blast\s+\d+",
+    ]
+    for p in patterns:
+        if re.search(p, query_lower):
+            return True
+            
+    # Also check if user specifically asked for "only N" or "N records"
+    if re.search(r"\b\d+\s+(records|rows|entries|invoices|orders|customers|items)", query_lower):
+        return True
+        
+    return False
+
 # ── Mock SAP Data for Prototype ──
 MOCK_SAP_DATA: dict[str, list[dict]] = {
     "FI_InvoiceSet": [
@@ -205,6 +232,11 @@ async def execute_odata(state: AgentState) -> dict[str, Any]:
     generated_query = state.get("generated_query", "")
     if generated_query:
         generated_query = generated_query.replace("\n", "").replace("\r", "").strip()
+        # Clean any XML OData tags or wrapper markup
+        for tag in ["<ODATA>", "</ODATA>", "<odata>", "</odata>"]:
+            generated_query = generated_query.replace(tag, "")
+        generated_query = generated_query.strip("/")
+        generated_query = generated_query.strip()
     existing_buffer = state.get("data_buffer", [])
 
     if not generated_query:
@@ -266,22 +298,27 @@ async def execute_odata(state: AgentState) -> dict[str, Any]:
             entity_set_path = parsed_url.path.strip("/")
             query_params = parse_qs(parsed_url.query)
 
-            db = get_db()
-            # Find the registered entity set to resolve the service module namespace
-            records = await db.query("SELECT * FROM sap_entities WHERE entity_set = $entity_set;", {"entity_set": entity_set_path})
-            if not records:
-                # Fallback case-insensitive match
-                all_entities = await db.query("SELECT * FROM sap_entities;")
-                for r in all_entities:
-                    if r.get("entity_set", "").lower() == entity_set_path.lower():
-                        records = [r]
-                        break
+            matched_entity = state.get("matched_entity", {})
+            if matched_entity and matched_entity.get("entity_set", "").lower() == entity_set_path.lower():
+                service_name = matched_entity.get("module", "default")
+            else:
+                db = get_db()
+                # Find the registered entity set to resolve the service module namespace
+                records = await db.query("SELECT * FROM sap_entities WHERE entity_set = $entity_set;", {"entity_set": entity_set_path})
+                if not records:
+                    # Fallback case-insensitive match
+                    all_entities = await db.query("SELECT * FROM sap_entities;")
+                    for r in all_entities:
+                        if r.get("entity_set", "").lower() == entity_set_path.lower():
+                            records = [r]
+                            break
 
-            if not records:
-                raise Exception(f"Entity set '{entity_set_path}' is not registered in SurrealDB. Register it in Settings first.")
+                if not records:
+                    raise Exception(f"Entity set '{entity_set_path}' is not registered in SurrealDB. Register it in Settings first.")
 
-            record = records[0]
-            service_name = record.get("module", "default")
+                record = records[0]
+                service_name = record.get("module", "default")
+
             safe_service = service_name.lower().replace(" ", "_").replace("-", "_")
             safe_entity = entity_set_path.lower().replace(" ", "_").replace("-", "_")
             
@@ -307,29 +344,109 @@ async def execute_odata(state: AgentState) -> dict[str, Any]:
                 elif key == "$expand":
                     tool_args["expand"] = val
 
+        # Determine original $top and $skip requested by user/LLM
+        query_top = tool_args.get("top")
+        if query_top is not None:
+            try:
+                query_top = int(query_top)
+            except:
+                query_top = None
+
+        # Fetch user query to check if limit is explicit
+        user_query = ""
+        messages = state.get("messages", [])
+        if messages:
+            last = messages[-1]
+            user_query = last.content if hasattr(last, "content") else str(last)
+            
+        if query_top is not None and not is_explicit_limit_requested(user_query):
+            logger.info("Ignoring LLM default top limit of %d because user did not explicitly request a limit in prompt: '%s'", query_top, user_query)
+            query_top = None
+
+        original_skip = tool_args.get("skip", 0)
+        if original_skip is not None:
+            try:
+                original_skip = int(original_skip)
+            except:
+                original_skip = 0
+        else:
+            original_skip = 0
+
+        # We paginate in chunks defined by the configuration
+        page_size = settings.odata_pagination_limit
+        current_offset = len(existing_buffer)
+
+        # Check if we've already satisfied the requested limit
+        if query_top is not None and current_offset >= query_top:
+            return {
+                "data_buffer": existing_buffer,
+                "has_next_page": "",
+                "total_count": state.get("total_count"),
+                "error": "",
+            }
+
+        # Calculate top and skip for this page
+        fetch_top = page_size
+        if query_top is not None:
+            remaining = query_top - current_offset
+            fetch_top = min(page_size, remaining)
+
+        fetch_skip = original_skip + current_offset
+
+        # Override tool arguments for this page request
+        tool_args["top"] = fetch_top
+        tool_args["skip"] = fetch_skip
+
         # 3. Call the tool using our MCP stdio client
         mcp_response = await run_mcp_tool(tool_name, tool_args)
         
         results = []
         total_count = None
+        next_link = None
         
-        if isinstance(mcp_response, dict) and ("results" in mcp_response or "total_count" in mcp_response):
-            results = mcp_response.get("results", [])
-            total_count = mcp_response.get("total_count")
+        if isinstance(mcp_response, dict):
+            if "results" in mcp_response or "total_count" in mcp_response or "next_link" in mcp_response:
+                results = mcp_response.get("results", [])
+                total_count = mcp_response.get("total_count")
+                next_link = mcp_response.get("next_link")
         elif isinstance(mcp_response, list):
             results = mcp_response
             
+        if total_count is None:
+            total_count = state.get("total_count")
+            
         new_buffer = existing_buffer + results
         logger.info(
-            "MCP OData execution returned %d records (total buffer: %d, total_count: %s).",
+            "MCP OData execution returned %d records (total buffer: %d, total_count: %s, next_link: %s).",
             len(results),
             len(new_buffer),
-            str(total_count)
+            str(total_count),
+            str(next_link)
         )
+
+        # Determine if there is a next page
+        has_next = False
+        if len(results) > 0:
+            if next_link is not None:
+                # If server explicitly sent a next link, page is not the last one
+                if query_top is None or len(new_buffer) < query_top:
+                    has_next = True
+            elif total_count is not None:
+                # If we have total count, keep requesting until we satisfy it or query_top
+                max_to_fetch = min(query_top, total_count) if query_top is not None else total_count
+                if len(new_buffer) < max_to_fetch:
+                    has_next = True
+            else:
+                # Fallback: check if we got at least fetch_top (meaning page was full)
+                if len(results) >= fetch_top:
+                    if query_top is None or len(new_buffer) < query_top:
+                        has_next = True
+
+        has_next_page = str(fetch_skip + len(results)) if has_next else ""
 
         return {
             "data_buffer": new_buffer,
-            "has_next_page": "", # NextLink handling is managed inside the tool or skipped
+            "has_next_page": has_next_page,
             "total_count": total_count,
             "error": "",
         }

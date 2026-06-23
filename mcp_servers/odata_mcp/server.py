@@ -109,7 +109,7 @@ MOCK_DATA = {
 }
 
 
-def generate_dynamic_mock_data(schema_str: str, entity_set_name: str, count: int = 5) -> list:
+def generate_dynamic_mock_data(schema_str: str, entity_set_name: str, count: int = 5, start_index: int = 0) -> list:
     """Generate dynamic mock records based on the OData entity schema."""
     properties = {}
     try:
@@ -135,7 +135,7 @@ def generate_dynamic_mock_data(schema_str: str, entity_set_name: str, count: int
     names = ["Alfreds Futterkiste", "Toms Spezialitäten", "Hanari Carnes", "Vins et alcools Chevalier", "Suprêmes délices"]
     
     mock_records = []
-    for i in range(count):
+    for i in range(start_index, start_index + count):
         record = {}
         for col_name, prop_info in properties.items():
             col_lower = col_name.lower()
@@ -143,7 +143,7 @@ def generate_dynamic_mock_data(schema_str: str, entity_set_name: str, count: int
             prop_format = prop_info.get("format", "")
             
             if prop_format == "date-time" or "date" in col_lower:
-                record[col_name] = f"2026-06-{10+i:02d}T08:30:00"
+                record[col_name] = f"2026-06-{10+(i%20):02d}T08:30:00"
             elif prop_type == "number" or prop_type == "integer" or "int" in prop_type:
                 if "id" in col_lower or "number" in col_lower:
                     record[col_name] = 1000 + i
@@ -184,19 +184,43 @@ async def execute_odata_call(record: dict, arguments: dict) -> list:
         logger.info("Mock mode active for service_url: %s", service_url)
         schema_str = record.get("metadata_schema", "")
         entity_name = record.get("entity_set", "")
-        mock_results = generate_dynamic_mock_data(schema_str, entity_name)
         
-        # Apply mock pagination if requested
+        top = arguments.get("top", settings.odata_pagination_limit)
+        if top is not None:
+            try:
+                top = int(top)
+            except:
+                top = settings.odata_pagination_limit
+        else:
+            top = settings.odata_pagination_limit
+            
+        skip = arguments.get("skip", 0)
+        if skip is not None:
+            try:
+                skip = int(skip)
+            except:
+                skip = 0
+        else:
+            skip = 0
+            
+        mock_results = generate_dynamic_mock_data(schema_str, entity_name, count=top, start_index=skip)
         total_count = 1100 # Default large mock count
-        if arguments.get("top") is not None:
-            top = int(arguments["top"])
-            mock_results = mock_results[:top]
         
         return {"results": mock_results, "total_count": total_count}
 
-    # Resolve URL
-    base_url_slash = service_url if service_url.endswith("/") else f"{service_url}/"
-    full_url = urljoin(base_url_slash, odata_path)
+    # Check for custom CPI routing (query params containing 'service')
+    import urllib.parse
+    parsed_service = urllib.parse.urlparse(service_url)
+    query_params = urllib.parse.parse_qs(parsed_service.query)
+    is_cpi_format = "service" in query_params
+
+    if is_cpi_format:
+        # CPI format: base URL without query string
+        full_url = urllib.parse.urlunparse(parsed_service._replace(query=""))
+    else:
+        # Standard OData URL joining
+        base_url_slash = service_url if service_url.endswith("/") else f"{service_url}/"
+        full_url = urllib.parse.urljoin(base_url_slash, odata_path)
 
     # Detect OData version from the service URL to pick the right count parameter.
     # OData v4 uses $count=true; OData v2 (SAP, classic Northwind) uses $inlinecount=allpages.
@@ -211,23 +235,48 @@ async def execute_odata_call(record: dict, arguments: dict) -> list:
     # (OData servers expect literal $filter, $select, etc. — not %24filter)
     qs_parts = []
 
-    if is_v4:
-        qs_parts.append("$count=true")
+    if is_cpi_format:
+        qs_parts.append(f"service={urllib.parse.quote(query_params['service'][0])}")
+        clean_odata_path = odata_path.lstrip("/")
+        if clean_odata_path:
+            qs_parts.append(f"entity={urllib.parse.quote(clean_odata_path)}")
+        
+        # Add any other original query params (except service and metadata)
+        for k, v in query_params.items():
+            if k.lower() not in ["service", "metadata"]:
+                for val in v:
+                    qs_parts.append(f"{urllib.parse.quote(k)}={urllib.parse.quote(val)}")
+        
+        qs_parts.append("inlinecount=allpages")
+        if arguments.get("filter"):
+            filter_val = urllib.parse.quote(arguments["filter"], safe="()*,\\'= ")
+            qs_parts.append(f"filter={filter_val}")
+        if arguments.get("select"):
+            qs_parts.append(f"select={arguments['select']}")
+        if arguments.get("top") is not None:
+            qs_parts.append(f"top={arguments['top']}")
+        if arguments.get("skip") is not None:
+            qs_parts.append(f"skip={arguments['skip']}")
+        if arguments.get("expand"):
+            qs_parts.append(f"expand={arguments['expand']}")
     else:
-        qs_parts.append("$inlinecount=allpages")
+        if is_v4:
+            qs_parts.append("$count=true")
+        else:
+            qs_parts.append("$inlinecount=allpages")
 
-    if arguments.get("filter"):
-        import urllib.parse
-        filter_val = urllib.parse.quote(arguments["filter"], safe="()*,\\'= ")
-        qs_parts.append(f"$filter={filter_val}")
-    if arguments.get("select"):
-        qs_parts.append(f"$select={arguments['select']}")
-    if arguments.get("top") is not None:
-        qs_parts.append(f"$top={arguments['top']}")
-    if arguments.get("skip") is not None:
-        qs_parts.append(f"$skip={arguments['skip']}")
-    if arguments.get("expand"):
-        qs_parts.append(f"$expand={arguments['expand']}")
+        if arguments.get("filter"):
+            import urllib.parse
+            filter_val = urllib.parse.quote(arguments["filter"], safe="()*,\\'= ")
+            qs_parts.append(f"$filter={filter_val}")
+        if arguments.get("select"):
+            qs_parts.append(f"$select={arguments['select']}")
+        if arguments.get("top") is not None:
+            qs_parts.append(f"$top={arguments['top']}")
+        if arguments.get("skip") is not None:
+            qs_parts.append(f"$skip={arguments['skip']}")
+        if arguments.get("expand"):
+            qs_parts.append(f"$expand={arguments['expand']}")
 
     query_string = "&".join(qs_parts)
     request_url = f"{full_url}?{query_string}" if query_string else full_url
@@ -238,21 +287,34 @@ async def execute_odata_call(record: dict, arguments: dict) -> list:
     if settings.sap_client:
         headers["sap-client"] = settings.sap_client
 
+    auth = None
+    if settings.sap_odata_user and settings.sap_odata_pass:
+        auth = (settings.sap_odata_user, settings.sap_odata_pass)
+
     logger.info("Executing OData HTTP call: %s", request_url)
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(request_url, headers=headers)
+        response = await client.get(request_url, headers=headers, auth=auth)
         response.raise_for_status()
         data = response.json()
 
         results = []
         total_count = None
+        next_link = None
 
         if isinstance(data, list):
             results = data
         elif isinstance(data, dict):
+            # Try to auto-discover next link at root level
+            for k, v in data.items():
+                if k.lower() in ("@odata.nextlink", "__next", "nextlink", "next_link") and isinstance(v, str):
+                    next_link = v
+                    break
+
             # OData v4 — @odata.count / value
             if "@odata.count" in data:
                 total_count = data["@odata.count"]
+            if "@odata.nextLink" in data and isinstance(data["@odata.nextLink"], str):
+                next_link = data["@odata.nextLink"]
             if "value" in data:
                 results = data["value"]
             # OData v2 — d.results / d.__count
@@ -261,6 +323,8 @@ async def execute_odata_call(record: dict, arguments: dict) -> list:
                 if isinstance(d_data, dict):
                     if "__count" in d_data:
                         total_count = d_data["__count"]
+                    if "__next" in d_data and isinstance(d_data["__next"], str):
+                        next_link = d_data["__next"]
                     if "results" in d_data:
                         results = d_data["results"]
                     else:
@@ -270,7 +334,20 @@ async def execute_odata_call(record: dict, arguments: dict) -> list:
                 else:
                     results = [d_data]
             else:
-                results = [data]
+                # Custom CPI OData wrapper might return a custom key (e.g. "A_PurchaseOrderType") containing a list of records
+                list_keys = [k for k, v in data.items() if isinstance(v, list)]
+                if list_keys:
+                    target_key = list_keys[0]
+                    entity_set = record.get("entity_set", "")
+                    if entity_set:
+                        entity_lower = entity_set.lower()
+                        for k in list_keys:
+                            if entity_lower in k.lower():
+                                target_key = k
+                                break
+                    results = data[target_key]
+                else:
+                    results = [data]
 
         try:
             if total_count is not None:
@@ -278,7 +355,7 @@ async def execute_odata_call(record: dict, arguments: dict) -> list:
         except (ValueError, TypeError):
             total_count = None
 
-        return {"results": results, "total_count": total_count}
+        return {"results": results, "total_count": total_count, "next_link": next_link}
 
 
 async def get_registered_tools() -> list:

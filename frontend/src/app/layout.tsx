@@ -16,8 +16,8 @@ import "./globals.css";
 import { ThemeProvider } from "@/contexts/theme-context";
 
 export const metadata: Metadata = {
-  title: "SAP OData Assistant",
-  description: "Enterprise AI-powered assistant for SAP OData queries, analytics, and data exploration",
+  title: "Project Nexus",
+  description: "Next-Gen Assistant for Enterprise Data Orchestration",
 };
 
 export default function RootLayout({

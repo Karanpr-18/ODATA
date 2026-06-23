@@ -55,8 +55,8 @@ async def lifespan(app: FastAPI):
 
 # ── Create FastAPI App ──
 app = FastAPI(
-    title="SAP OData Chatbot API",
-    description="Enterprise AI chatbot for querying SAP OData services using natural language",
+    title="Project Nexus API",
+    description="Project Nexus: Next-Gen Assistant for Enterprise Data Orchestration",
     version="0.1.0",
     lifespan=lifespan,
 )

@@ -123,9 +123,16 @@ async def sync_odata():
         logger.error("SAP_ODATA_BASE_URL is not set in environment.")
         return
         
-    metadata_url = urljoin(base_url if base_url.endswith('/') else base_url + '/', "$metadata")
+    if "$metadata" in base_url or "metadata=" in base_url:
+        metadata_url = base_url
+    else:
+        metadata_url = urljoin(base_url if base_url.endswith('/') else base_url + '/', "$metadata")
     
     logger.info(f"Fetching OData metadata from: {metadata_url}")
+    if settings.sap_odata_user:
+        logger.info(f"Using OData basic authentication for user: {settings.sap_odata_user}")
+    else:
+        logger.info("No OData basic authentication configured.")
     
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -133,7 +140,11 @@ async def sync_odata():
             if settings.sap_client:
                 headers["sap-client"] = settings.sap_client
                 
-            response = await client.get(metadata_url, headers=headers)
+            auth = None
+            if settings.sap_odata_user and settings.sap_odata_pass:
+                auth = (settings.sap_odata_user, settings.sap_odata_pass)
+                
+            response = await client.get(metadata_url, headers=headers, auth=auth)
             response.raise_for_status()
             metadata_xml = response.text
     except Exception as e:
@@ -153,11 +164,11 @@ async def sync_odata():
     db = get_db()
     await db.connect()
     
-    logger.info("Clearing existing sap_entities and relationships...")
-    await db.query("DELETE FROM sap_entities;")
-    await db.query("DELETE FROM expands_to;")
-    await db.query("DELETE FROM belongs_to;")
-    await db.query("DELETE FROM depends_on;")
+    logger.info("Clearing existing default sap_entities and relationships...")
+    await db.query("DELETE sap_entities WHERE module = 'Dynamic';")
+    await db.query("DELETE expands_to WHERE in.module = 'Dynamic' OR out.module = 'Dynamic';")
+    await db.query("DELETE belongs_to WHERE in.module = 'Dynamic' OR out.module = 'Dynamic';")
+    await db.query("DELETE depends_on WHERE in.module = 'Dynamic' OR out.module = 'Dynamic';")
     
     # Upsert entities
     logger.info("Generating embeddings and seeding parsed entities...")

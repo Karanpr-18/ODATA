@@ -194,16 +194,23 @@ async def update_settings(payload: SettingsPayload):
 async def get_odata_metadata(payload: MetadataPayload):
     """Fetch and parse metadata from the given OData service URL."""
     url = payload.url
-    if not url.endswith("$metadata"):
+    if "$metadata" in url or "metadata=" in url:
+        pass
+    elif not url.endswith("$metadata"):
         if not url.endswith("/"):
             url += "/"
         url += "$metadata"
     
     logger.info("Fetching OData metadata for discovery from: %s", url)
     try:
+        app_config = get_app_config()
+        auth = None
+        if app_config.sap_odata_user and app_config.sap_odata_pass:
+            auth = (app_config.sap_odata_user, app_config.sap_odata_pass)
+            
         async with httpx.AsyncClient(timeout=30.0) as client:
             headers = {"Accept": "application/xml"}
-            response = await client.get(url, headers=headers)
+            response = await client.get(url, headers=headers, auth=auth)
             response.raise_for_status()
             metadata_xml = response.text
     except Exception as e:
@@ -259,16 +266,23 @@ async def register_entities(payload: RegisterEntitiesPayload):
     selected_sets = payload.entity_sets
 
     metadata_url = url
-    if not metadata_url.endswith("$metadata"):
+    if "$metadata" in metadata_url or "metadata=" in metadata_url:
+        pass
+    elif not metadata_url.endswith("$metadata"):
         if not metadata_url.endswith("/"):
             metadata_url += "/"
         metadata_url += "$metadata"
 
     logger.info("Registering entities from: %s", metadata_url)
     try:
+        app_config = get_app_config()
+        auth = None
+        if app_config.sap_odata_user and app_config.sap_odata_pass:
+            auth = (app_config.sap_odata_user, app_config.sap_odata_pass)
+            
         async with httpx.AsyncClient(timeout=30.0) as client:
             headers = {"Accept": "application/xml"}
-            response = await client.get(metadata_url, headers=headers)
+            response = await client.get(metadata_url, headers=headers, auth=auth)
             response.raise_for_status()
             metadata_xml = response.text
     except Exception as e:
