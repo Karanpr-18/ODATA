@@ -6,6 +6,7 @@ import { ChatArea } from "@/components/chat-area";
 import { SettingsView } from "@/components/settings-view";
 import { DiscoveryView } from "@/components/discovery-view";
 import { JoinView } from "@/components/join-view";
+import { ServiceSettingsView } from "@/components/service-settings-view";
 import { fetchThreads, createThread, deleteThread, renameThread, fetchThreadMessages, fetchSettings, ServiceConfig, JoinedServiceConfig, MCPConfig } from "@/lib/api";
 import { Thread, Message, MODELS } from "@/lib/types";
 
@@ -13,7 +14,8 @@ type AppView =
   | { type: "chat" }
   | { type: "settings" }
   | { type: "discovery"; service?: ServiceConfig; mcp?: MCPConfig }
-  | { type: "join" };
+  | { type: "join" }
+  | { type: "service-settings"; service: ServiceConfig };
 
 export default function Home() {
   const [threads, setThreads] = useState<Thread[]>([]);
@@ -148,6 +150,19 @@ export default function Home() {
               setCurrentView({ type: "discovery", ...params })
             }
             onNavigateToJoin={() => setCurrentView({ type: "join" })}
+            onNavigateToServiceSettings={(service) =>
+              setCurrentView({ type: "service-settings", service })
+            }
+          />
+        );
+      case "service-settings":
+        return (
+          <ServiceSettingsView
+            service={currentView.service}
+            onBack={() => setCurrentView({ type: "settings" })}
+            onNavigateToDiscovery={(params) =>
+              setCurrentView({ type: "discovery", ...params })
+            }
           />
         );
       case "discovery":
@@ -155,7 +170,20 @@ export default function Home() {
           <DiscoveryView
             service={currentView.service}
             mcp={currentView.mcp}
-            onBack={() => setCurrentView({ type: "settings" })}
+            onBack={() => {
+              // If we have an MCP config context (meaning we edited it), go back to service-settings of its parent service
+              if (currentView.mcp) {
+                // Find parent service in state or fallback to a constructed ServiceConfig
+                const parentService = services.find(
+                  (s) => s.name === currentView.mcp?.service_name
+                ) as ServiceConfig;
+                if (parentService) {
+                  setCurrentView({ type: "service-settings", service: parentService });
+                  return;
+                }
+              }
+              setCurrentView({ type: "settings" });
+            }}
           />
         );
       case "join":
@@ -184,7 +212,7 @@ export default function Home() {
   };
 
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
+    <div className="app-container">
       <Sidebar
         threads={threads}
         activeThreadId={activeThreadId}

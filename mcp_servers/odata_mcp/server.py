@@ -361,10 +361,32 @@ async def execute_odata_call(record: dict, arguments: dict) -> list:
 async def get_registered_tools() -> list:
     """Retrieve all registered entities from SurrealDB and format them as MCP tools."""
     try:
+        # Check active/inactive status from settings config
+        settings_recs = await surreal_query("SELECT services, mcps FROM settings WHERE id = settings:config;")
+        inactive_mcps = set()
+        if settings_recs and isinstance(settings_recs, list) and len(settings_recs) > 0:
+            services = settings_recs[0].get("services", [])
+            mcps = settings_recs[0].get("mcps", [])
+            
+            inactive_service_names = {s.get("name", "").lower() for s in services if s.get("is_active") is False}
+            inactive_service_urls = {s.get("url", "").lower() for s in services if s.get("is_active") is False}
+            
+            for m in mcps:
+                parent_name = m.get("service_name", "").lower()
+                parent_url = m.get("url", "").lower()
+                if parent_name in inactive_service_names or parent_url in inactive_service_urls:
+                    inactive_mcps.add(m.get("name", "").lower())
+
         records = await surreal_query("SELECT * FROM sap_entities;")
         tools = []
         for r in records:
             service_name = r.get("module", "default")
+            
+            # Exclude if the service itself is inactive, or if the entity matches an inactive service URL
+            entity_service_url = r.get("service_url", "").lower()
+            if service_name.lower() in inactive_mcps or entity_service_url in inactive_service_urls:
+                continue
+                
             entity_set = r.get("entity_set", "")
             safe_service = service_name.lower().replace(" ", "_").replace("-", "_")
             safe_entity = entity_set.lower().replace(" ", "_").replace("-", "_")

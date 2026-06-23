@@ -52,6 +52,7 @@ class ServiceConfig(BaseModel):
     name: str
     url: str
     description: str = ""
+    is_active: bool = True
 
 
 class MCPConfig(BaseModel):
@@ -81,6 +82,7 @@ class SettingsPayload(BaseModel):
     services: Optional[List[ServiceConfig]] = None
     joins: Optional[List[JoinConfig]] = None
     mcps: Optional[List[MCPConfig]] = None
+    service_head_urls: Optional[List[str]] = None
 
 
 # ── Endpoints ──
@@ -133,6 +135,9 @@ async def get_settings():
                 "services": db_services,
                 "mcps": record.get("mcps", []),
                 "joins": record.get("joins", []),
+                "service_head_urls": record.get("service_head_urls", [
+                    "https://soprasteriagroup-cpi.it-cpi001-rt.cfapps.eu10.hana.ondemand.com/http/testonpremise?service="
+                ]),
             }
     except Exception as e:
         logger.warning("Failed to fetch settings from SurrealDB: %s", e)
@@ -161,6 +166,9 @@ async def get_settings():
         "services": default_services,
         "mcps": [],
         "joins": [],
+        "service_head_urls": [
+            "https://soprasteriagroup-cpi.it-cpi001-rt.cfapps.eu10.hana.ondemand.com/http/testonpremise?service="
+        ],
     }
 
 
@@ -396,4 +404,104 @@ async def delete_mcp_entities(mcp_name: str):
     except Exception as e:
         logger.error("Failed to delete entities for MCP %s: %s", mcp_name, e)
         raise HTTPException(status_code=500, detail=f"Failed to delete entities: {str(e)}")
+
+
+class RefreshServicePayload(BaseModel):
+    service_name: str
+    url: str
+
+
+@router.post("/refresh_service")
+async def refresh_service(payload: RefreshServicePayload):
+    service_name = payload.service_name
+    url = payload.url
+
+    # Find all MCPs under this service name or URL in settings
+    db = get_db()
+    try:
+        results = await db.query("SELECT mcps FROM settings WHERE id = settings:config;")
+        if not results or not isinstance(results, list) or len(results) == 0:
+            raise HTTPException(status_code=404, detail="Settings not found")
+        
+        mcps = results[0].get("mcps", [])
+        service_mcps = [m for m in mcps if m.get("service_name") == service_name or m.get("url") == url]
+        
+        if not service_mcps:
+            return {"status": "success", "message": "No MCP configurations found for this service to refresh."}
+            
+        # Fetch metadata XML
+        metadata_url = url
+        if "$metadata" in metadata_url or "metadata=" in metadata_url:
+            pass
+        elif not metadata_url.endswith("$metadata"):
+            if not metadata_url.endswith("/"):
+                metadata_url += "/"
+            metadata_url += "$metadata"
+            
+        app_config = get_app_config()
+        auth = None
+        if app_config.sap_odata_user and app_config.sap_odata_pass:
+            auth = (app_config.sap_odata_user, app_config.sap_odata_pass)
+            
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            headers = {"Accept": "application/xml"}
+            response = await client.get(metadata_url, headers=headers, auth=auth)
+            response.raise_for_status()
+            metadata_xml = response.text
+            
+        entity_types, entity_sets = parse_metadata(metadata_xml)
+        
+        # Refresh each MCP configuration
+        refreshed_count = 0
+        for mcp in service_mcps:
+            mcp_name = mcp.get("name")
+            selected_sets = mcp.get("entity_sets", [])
+            entity_descriptions = mcp.get("entity_descriptions", {}) or {}
+            
+            safe_service = mcp_name.lower().replace(" ", "_").replace("-", "_")
+            
+            for set_name in selected_sets:
+                if set_name not in entity_sets:
+                    continue
+                    
+                set_info = entity_sets[set_name]
+                type_name = set_info["entity_type"]
+                if type_name not in entity_types:
+                    continue
+                    
+                type_info = entity_types[type_name]
+                safe_name = set_name.lower().replace(" ", "_").replace("-", "_")
+                entity_id = f"sap_entities:dynamic_{safe_service}_{safe_name}"
+                
+                props = list(json.loads(type_info["schema"]).get("properties", {}).keys())
+                
+                if set_name in entity_descriptions and entity_descriptions[set_name].strip():
+                    description = entity_descriptions[set_name].strip()
+                else:
+                    description = f"Data entity representing {set_name} from {mcp_name}. Contains properties like {', '.join(props)[:100]}."
+                    
+                embed_prompt = f"Name: {set_name}. Description: {description}. Fields: {', '.join(type_info['keys'])}"
+                embedding = await get_embedding(embed_prompt)
+                
+                content_dict = {
+                    "name": set_name,
+                    "description": description,
+                    "entity_set": set_name,
+                    "module": mcp_name,
+                    "service_url": url,
+                    "metadata_schema": type_info["schema"],
+                    "odata_url": f"/{set_name}",
+                    "key_fields": type_info["keys"],
+                    "nav_properties": type_info["nav_props"],
+                    "filter_fields": props[:10],
+                    "embedding": embedding
+                }
+                
+                await db.query(f"UPSERT {entity_id} CONTENT $content;", {"content": content_dict})
+                refreshed_count += 1
+                
+        return {"status": "success", "message": f"Successfully refreshed {refreshed_count} entities."}
+    except Exception as e:
+        logger.error("Failed to refresh service: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to refresh service: {str(e)}")
 

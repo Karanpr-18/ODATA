@@ -37,10 +37,13 @@ frontend/out/
 frontend/build/
 
 # Database files & Docker volumes
-db/
+db/data/
 *.db
 *.sqlite
 .surreal_data/
+
+# Generated Stitch UI design exports (not part of the application)
+stitch_nexus_chat_interface_modern_dark_theme/
 
 # OS / Editor configuration
 .DS_Store

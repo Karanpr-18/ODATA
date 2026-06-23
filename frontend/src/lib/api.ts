@@ -204,6 +204,7 @@ export interface ServiceConfig {
   name: string;
   url: string;
   description: string;
+  is_active?: boolean;
 }
 
 export interface MCPConfig {
@@ -242,6 +243,7 @@ export interface AppSettings {
   services: (ServiceConfig | JoinedServiceConfig)[];
   mcps: MCPConfig[];
   joins: JoinConfig[];
+  service_head_urls?: string[];
 }
 
 export async function fetchSettings(): Promise<AppSettings> {
@@ -351,6 +353,21 @@ export async function deleteODataMCPEntities(mcpName: string): Promise<boolean> 
   } catch (err) {
     console.error("deleteODataMCPEntities error:", err);
     return false;
+  }
+}
+
+export async function refreshService(serviceName: string, url: string): Promise<{ status: string; message: string } | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/settings/refresh_service`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ service_name: serviceName, url }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.error("refreshService error:", err);
+    return null;
   }
 }
 

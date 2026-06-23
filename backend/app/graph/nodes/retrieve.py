@@ -101,10 +101,37 @@ async def retrieve_context(state: AgentState) -> dict[str, Any]:
             logger.warning("Keyword hybrid search failed: %s", ke)
 
     try:
+        # Fetch settings to filter out inactive services and their MCPs
+        inactive_mcps = set()
+        inactive_service_urls = set()
+        try:
+            settings_recs = await db.query("SELECT services, mcps FROM settings WHERE id = settings:config;")
+            if settings_recs and isinstance(settings_recs, list) and len(settings_recs) > 0:
+                services = settings_recs[0].get("services", [])
+                mcps = settings_recs[0].get("mcps", [])
+                
+                inactive_service_names = {s.get("name", "").lower() for s in services if s.get("is_active") is False}
+                inactive_service_urls = {s.get("url", "").lower() for s in services if s.get("is_active") is False}
+                
+                for m in mcps:
+                    parent_name = m.get("service_name", "").lower()
+                    parent_url = m.get("url", "").lower()
+                    if parent_name in inactive_service_names or parent_url in inactive_service_urls:
+                        inactive_mcps.add(m.get("name", "").lower())
+        except Exception as se:
+            logger.warning("Failed to fetch settings for inactive service filtering: %s", se)
+
         # Combine vector search and keyword matches, preferring the higher score
         combined = {}
         for e in (entities + keyword_entities):
             eid = e["id"]
+            
+            # Exclude entities belonging to inactive MCPs or inactive service URLs
+            module_name = e.get("module", "default")
+            entity_service_url = e.get("service_url", "").lower()
+            if module_name.lower() in inactive_mcps or entity_service_url in inactive_service_urls:
+                continue
+
             if eid in combined:
                 if e.get("score", 0) > combined[eid].get("score", 0):
                     combined[eid] = e

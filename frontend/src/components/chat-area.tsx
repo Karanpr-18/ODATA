@@ -20,6 +20,7 @@ import {
   Copy,
   Check,
   Loader2,
+  MessageSquare,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -377,10 +378,10 @@ export function ChatArea({
 
   // Suggestion chips for welcome screen
   const suggestions = [
-    { icon: <Database size={14} />, text: "Show all SAP entities" },
-    { icon: <BarChart3 size={14} />, text: "Sales orders this quarter" },
-    { icon: <Table2 size={14} />, text: "List top customers" },
-    { icon: <Zap size={14} />, text: "Material stock overview" },
+    { icon: <BarChart3 size={22} className="welcome-chip-icon" />, text: "Analyze Financial Data" },
+    { icon: <Zap size={22} className="welcome-chip-icon" />, text: "Generate Python Code" },
+    { icon: <Table2 size={22} className="welcome-chip-icon" />, text: "Draft Quarterly Report" },
+    { icon: <MessageSquare size={22} className="welcome-chip-icon" />, text: "Translate Document" },
   ];
 
   return (
@@ -398,59 +399,55 @@ export function ChatArea({
       {/* Top bar */}
       <div
         style={{
-          padding: "12px 20px",
+          padding: "16px 24px",
           display: "flex",
           alignItems: "center",
-          gap: 12,
+          justifyContent: "space-between",
           borderBottom: "1px solid var(--border-secondary)",
           background: "var(--bg-glass)",
-          backdropFilter: "blur(12px)",
-          WebkitBackdropFilter: "blur(12px)",
+          backdropFilter: "blur(20px)",
+          WebkitBackdropFilter: "blur(20px)",
           zIndex: 10,
         }}
       >
-        {!sidebarOpen && (
-          <button
-            onClick={onToggleSidebar}
-            style={{
-              background: "none",
-              border: "none",
-              color: "var(--text-tertiary)",
-              cursor: "pointer",
-              padding: 4,
-              borderRadius: "var(--radius-sm)",
-              display: "flex",
-              transition: "color var(--transition-fast)",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--text-primary)")}
-            onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-tertiary)")}
-          >
-            <PanelLeftOpen size={18} />
-          </button>
-        )}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
-          <Bot size={18} style={{ color: "var(--text-accent)" }} />
-          <span
-            className="font-display"
-            style={{
-              fontSize: "14px",
-              fontWeight: 600,
-              color: "var(--text-primary)",
-            }}
-          >
-            Project Nexus
-          </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {!sidebarOpen && (
+            <button
+              onClick={onToggleSidebar}
+              style={{
+                background: "none",
+                border: "none",
+                color: "var(--text-tertiary)",
+                cursor: "pointer",
+                padding: 4,
+                borderRadius: "var(--radius-sm)",
+                display: "flex",
+                transition: "color var(--transition-fast)",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = "var(--text-primary)")}
+              onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-tertiary)")}
+            >
+              <PanelLeftOpen size={18} />
+            </button>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Bot size={18} style={{ color: "var(--text-accent)" }} />
+            <span
+              className="font-display"
+              style={{
+                fontSize: "14px",
+                fontWeight: 600,
+                color: "var(--text-primary)",
+              }}
+            >
+              Project Nexus
+            </span>
+          </div>
         </div>
+
         {isStreaming && (
           <div
             style={{
-              marginLeft: "auto",
               display: "flex",
               alignItems: "center",
               gap: 6,
@@ -489,12 +486,11 @@ export function ChatArea({
         {messages.length === 0 ? (
           /* Welcome Screen */
           <div className="welcome-container">
-            <div className="welcome-icon-ring">
-              <Database size={36} style={{ color: "var(--accent-primary)" }} />
-            </div>
-            <h1 className="welcome-title">Project Nexus</h1>
+            <h1 className="welcome-title">
+              Welcome to <span className="text-gradient">Project Nexus</span>
+            </h1>
             <p className="welcome-subtitle">
-              Next-Gen Assistant for Enterprise Data Orchestration. Ask anything about your SAP data.
+              Unlock advanced intelligence. Start your professional AI conversation.
             </p>
             <div className="welcome-chips">
               {suggestions.map((s, i) => (
@@ -508,7 +504,7 @@ export function ChatArea({
                   style={{ animationDelay: `${i * 0.08}s` }}
                 >
                   {s.icon}
-                  {s.text}
+                  <span>{s.text}</span>
                 </button>
               ))}
             </div>
@@ -517,7 +513,7 @@ export function ChatArea({
           /* Message list */
           <div
             style={{
-              maxWidth: 1100,
+              maxWidth: 1600,
               margin: "0 auto",
               padding: "0 24px",
               width: "100%",
@@ -599,7 +595,7 @@ export function ChatArea({
       <div
         style={{
           padding: "12px 24px 20px",
-          maxWidth: 1100,
+          maxWidth: 1600,
           margin: "0 auto",
           width: "100%",
         }}

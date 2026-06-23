@@ -244,19 +244,21 @@ async def chat_endpoint(request: Request):
                     db = get_db()
                     # Save user message
                     user_content = messages[-1].get("content", "")
+                    escaped_user_content = user_content.replace("'", "\\'")
                     await db.query(f"""
                         CREATE message SET
                             thread = {thread_id},
                             role = 'user',
-                            content = '{user_content.replace("'", "\\'")}',
+                            content = '{escaped_user_content}',
                             created_at = time::now();
                     """)
                     # Save assistant response
+                    escaped_final_response = final_response.replace("'", "\\'")
                     await db.query(f"""
                         CREATE message SET
                             thread = {thread_id},
                             role = 'assistant',
-                            content = '{final_response.replace("'", "\\'")}',
+                            content = '{escaped_final_response}',
                             created_at = time::now();
                     """)
                     # Update thread timestamp and auto-title (only if title is still the default "New Chat")
@@ -268,10 +270,11 @@ async def chat_endpoint(request: Request):
                         
                         if current_title == "New Chat":
                             title = user_content[:50] + ("..." if len(user_content) > 50 else "")
+                            escaped_title = title.replace("'", "\\'")
                             await db.query(f"""
                                 UPDATE {thread_id} SET
                                     updated_at = time::now(),
-                                    title = '{title.replace("'", "\\'")}';
+                                    title = '{escaped_title}';
                             """)
                         else:
                             await db.query(f"""

@@ -14,6 +14,7 @@ import {
   X,
   PanelLeftClose,
   Settings,
+  User,
 } from "lucide-react";
 import { useTheme } from "@/contexts/theme-context";
 import { Thread } from "@/lib/types";
@@ -43,7 +44,7 @@ export function Sidebar({
   onToggleSidebar,
   onOpenSettings,
 }: SidebarProps) {
-  const { theme, toggleTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -394,31 +395,114 @@ export function Sidebar({
         <button
           className="model-selector-btn"
           onClick={onOpenSettings}
-        >
-          <Settings size={15} style={{ opacity: 0.7 }} />
-          <span style={{ flex: 1, textAlign: "left" }}>Settings</span>
-        </button>
-
-        {/* Theme Toggle */}
-        <div
           style={{
             display: "flex",
             alignItems: "center",
-            justifyContent: "space-between",
+            gap: "10px",
+            background: "none",
+            border: "none",
+            padding: "8px 12px",
+            cursor: "pointer",
+            width: "100%",
+            borderRadius: "var(--radius-md)",
+            transition: "background var(--transition-fast)"
+          }}
+        >
+          {/* User circle avatar */}
+          <div style={{
+            width: "32px",
+            height: "32px",
+            borderRadius: "50%",
+            background: "rgba(255, 255, 255, 0.1)",
+            border: "1px solid var(--border-secondary)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--text-secondary)",
+            flexShrink: 0
+          }}>
+            <User size={16} />
+          </div>
+          
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+            <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-primary)", lineHeight: 1.2 }}>Profile</span>
+            <span style={{ fontSize: "11px", color: "var(--text-tertiary)" }}>Settings</span>
+          </div>
+
+          <Settings size={16} style={{ color: "var(--accent-primary)" }} />
+        </button>
+
+        {/* Theme Picker */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "8px",
+            marginTop: "4px",
           }}
         >
           <span
             style={{
-              fontSize: "12px",
+              fontSize: "11px",
               color: "var(--text-tertiary)",
-              fontWeight: 500,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
             }}
           >
-            {theme === "dark" ? "Dark Mode" : "Light Mode"}
+            Nexus Theme
           </span>
-          <button className="theme-toggle" onClick={toggleTheme}>
-            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(4, 1fr)",
+              gap: "6px",
+            }}
+          >
+            {(
+              [
+                { id: "crimson-sidebar-light", color: "#b91c1c", label: "Crimson Sidebar Light" },
+                { id: "clean-crimson-light", color: "#ffffff", label: "Clean Crimson Light" },
+                { id: "soft-crimson-glass", color: "#ff8a8a", label: "Soft Crimson Glass" },
+                { id: "midnight-crimson", color: "#8b1a1a", label: "Midnight Crimson" },
+              ] as const
+            ).map((item) => {
+              const isActive = theme === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setTheme(item.id)}
+                  title={item.label}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    height: "32px",
+                    borderRadius: "6px",
+                    background: isActive ? "var(--bg-active)" : "var(--bg-glass)",
+                    border: isActive
+                      ? "1px solid var(--border-accent)"
+                      : "1px solid var(--border-secondary)",
+                    cursor: "pointer",
+                    transition: "all var(--transition-fast)",
+                  }}
+                  className="theme-picker-btn"
+                >
+                  <span
+                    style={{
+                      width: "12px",
+                      height: "12px",
+                      borderRadius: "50%",
+                      backgroundColor: item.color,
+                      border: item.id === "clean-crimson-light" ? "1.5px solid #b91c1c" : "none",
+                      boxShadow: isActive ? `0 0 8px ${item.color === "#ffffff" ? "#b91c1c" : item.color}` : "none",
+                      transition: "all var(--transition-fast)",
+                    }}
+                  />
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
     </aside>

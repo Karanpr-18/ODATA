@@ -49,9 +49,10 @@ async def create_thread(body: CreateThreadRequest):
     """Create a new chat thread."""
     db = get_db()
     try:
+        escaped_title = body.title.replace("'", "\\'")
         results = await db.query(f"""
             CREATE thread SET
-                title = '{body.title.replace("'", "\\'")}',
+                title = '{escaped_title}',
                 model = '{body.model}',
                 created_at = time::now(),
                 updated_at = time::now();
@@ -110,9 +111,10 @@ async def update_thread(thread_id: str, body: UpdateThreadRequest):
     db = get_db()
     try:
         record_id = thread_id if ":" in thread_id else f"thread:{thread_id}"
+        escaped_title = body.title.replace("'", "\\'")
         results = await db.query(f"""
             UPDATE {record_id} SET
-                title = '{body.title.replace("'", "\\'")}',
+                title = '{escaped_title}',
                 updated_at = time::now();
         """)
 
